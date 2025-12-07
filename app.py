@@ -202,7 +202,7 @@ def scrape_card_data(url):
             temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
         # 3. 提取 card_number
-        # 【修改点】：使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
+        # 使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
         # 匹配格式： [1+字母/数字] - [2+数字]
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
@@ -461,6 +461,7 @@ else:
     # --- 📊 深度分析面板 ---
     st.markdown("### 📊 单卡深度分析")
     
+    # 【确认点】：分析的起点是 filtered_df，保证了只对搜索结果进行分析
     analysis_df = filtered_df.copy() 
 
     if analysis_df.empty:
@@ -468,6 +469,8 @@ else:
     else:
         # 按卡牌名称、编号、等级和颜色来区分唯一变体
         analysis_df['unique_label'] = analysis_df['card_name'] + " [" + analysis_df['card_number'] + " " + analysis_df['rarity'] + " " + analysis_df['color'] + "]"
+        
+        # 【确认点】：下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         
