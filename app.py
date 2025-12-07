@@ -60,8 +60,8 @@ def load_data():
         # 获取指定名称的工作表
         worksheet = sh.worksheet(SHEET_NAME) 
         
-        # 使用 gspread-dataframe 读取为 DataFrame (修正: 使用别名 gd)
-        df = **gd.get_dataframe**(worksheet)
+        # 使用 gspread-dataframe 读取为 DataFrame 
+        df = gd.get_dataframe(worksheet)
         
         # 确保列头匹配
         expected_columns = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
@@ -131,8 +131,8 @@ def delete_card(card_id):
         columns_to_keep = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
         df_final = df_updated[columns_to_keep]
         
-        # 覆盖工作表 (修正: 使用别名 gd)
-        **gd.set_with_dataframe**(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
+        # 覆盖工作表
+        gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -263,3 +263,63 @@ with st.sidebar:
     img_url_default = st.session_state['scrape_result'].get('image_url', "")
 
     # 录入字段顺序: 1.编号 -> 2.名称 -> 3.版本 -> 4.等级 -> 5.价格 -> 6.数量 -> 7.日期
+    card_number_in = st.text_input("1. 卡牌编号", value=number_default)
+    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default)
+    set_in = st.text_input("3. 系列/版本", value=set_default) 
+    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default) 
+    
+    price_in = st.number_input("5. 价格 (¥)", min_value=0.0, step=10.0)
+    quantity_in = st.number_input("6. 数量 (张)", min_value=1, step=1)
+    
+    date_in = st.date_input("7. 录入日期", datetime.now())
+
+    st.divider()
+    st.write("🖼️ 卡牌图片 (可修正)")
+    # 移除了本地上传选项
+    img_source = st.radio("选择图片来源:", ["无", "网络链接"], horizontal=True, 
+                          index=1 if img_url_default else 0) 
+
+    final_image_path = None
+    
+    if img_source == "网络链接":
+        image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
+        if image_url_input:
+            try:
+                st.image(image_url_input, caption="预览", use_container_width=True)
+                final_image_path = image_url_input
+            except: 
+                st.error("无法加载该链接的图片，请检查网址是否正确。")
+    
+    # 确定最终图片路径，对于云端部署，只能是 URL
+    if img_source == "网络链接":
+        final_image_path = image_url_input
+    else:
+        final_image_path = None
+
+    if st.button("提交录入", type="primary"):
+        if name_in:
+            # 调用新的 add_card 函数 (写入 Google Sheets)
+            add_card(name_in, card_number_in, set_in, rarity_in, price_in, quantity_in, date_in, final_image_path)
+            
+            st.session_state['scrape_result'] = {}
+            st.success(f"已录入: {name_in} - ¥{price_in} x {quantity_in} 张")
+            st.rerun()
+        else:
+            st.error("卡牌名称不能为空！")
+
+# --- 主页面 ---
+st.title("📈 卡牌历史与价格分析 Pro")
+
+# 调用新的 load_data 函数
+df = load_data()
+
+if df.empty:
+    st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
+else:
+    # 预处理
+    # 确保 id 列是数字类型
+    df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int) 
+    df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
+    df['image_url'] = df['image_url'].fillna('')
+    df['rarity'] = df['rarity'].fillna('')
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int)
