@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-# 移除了 sqlite3, os, uuid
+# 移除了 sqlite3, os, uuid (不再使用本地数据库或文件系统)
 import requests
 from bs4 import BeautifulSoup
 import re 
@@ -9,6 +9,7 @@ import streamlit_gsheets as stg
 
 # === 配置 ===
 # 使用固定的工作表名称
+# 注意: 如果您的 Google Sheets 标签页名称不是“数据表”，请在此处修改!
 SHEET_NAME = "数据表" 
 YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
 # 移除了 DB_NAME 和 IMAGE_FOLDER 及其相关的 os.makedirs 
@@ -23,18 +24,18 @@ def load_data():
         conn = st.connection("gsheets", type=stg.GSheetsConnection)
         
         # 使用 read() 方法读取表格中的指定工作表
-        # 注意: 这里的 worksheet 名称必须与您的 Google Sheets 中的工作表标签名称一致 (默认为 'Sheet1' 或 '数据表')
         df = conn.read(worksheet=SHEET_NAME, ttl="10m")
         
         # 确保列头匹配
         expected_columns = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
         if df.empty or not all(col in df.columns for col in expected_columns):
-             # 如果表格为空或结构不正确，返回一个空的数据框
+             # 如果表格为空或结构不正确，返回一个带有预期列的空数据框
             return pd.DataFrame(columns=expected_columns)
 
         return df.sort_values(by='date', ascending=False)
     except Exception as e:
         st.error(f"无法连接或读取 Google Sheets 数据。请检查 Secrets 配置和表格授权。错误: {e}")
+        # 如果出错，返回一个空数据框，防止应用崩溃
         return pd.DataFrame(columns=['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url'])
 
 
@@ -43,9 +44,13 @@ def add_card(name, number, card_set, rarity, price, quantity, date, image_url=No
     # 重新获取最新的数据，以便在末尾追加 (用于计算新ID)
     df = load_data() 
     
-    # 生成新的唯一 ID
-    new_id = int(df['id'].max() + 1) if not df.empty and pd.notna(df['id'].max()) else 1
-    
+    # 生成新的唯一 ID。这里确保 ID 列是数字类型
+    try:
+        max_id = pd.to_numeric(df['id'], errors='coerce').max()
+        new_id = int(max_id + 1) if pd.notna(max_id) else 1
+    except:
+        new_id = 1
+        
     new_data = {
         'id': new_id,
         'card_name': name,
@@ -75,13 +80,14 @@ def delete_card(card_id):
     df = load_data()
     
     # 过滤掉要删除的行
-    df_updated = df[df['id'] != card_id]
+    df_updated = df[pd.to_numeric(df['id'], errors='coerce') != card_id]
     
     # 连接并覆盖整个工作表，只保留更新后的数据
     conn = st.connection("gsheets", type=stg.GSheetsConnection)
     # 使用 write 覆盖整个工作表，只保留需要的数据
-    # 移除临时的 'date_dt' 列 (如果存在)
-    conn.write(worksheet=SHEET_NAME, data=df_updated.drop(columns=['date_dt', 'unique_label'], errors='ignore'), ttl=0, header=True)
+    # 移除临时的列 (如果存在)
+    columns_to_keep = [col for col in df.columns if col not in ['date_dt', 'unique_label']]
+    conn.write(worksheet=SHEET_NAME, data=df_updated[columns_to_keep], ttl=0, header=True)
     
     st.cache_data.clear()
     
@@ -174,7 +180,6 @@ def clear_all_data():
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
-# init_db() 已删除
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
@@ -245,8 +250,6 @@ with st.sidebar:
 
     if st.button("提交录入", type="primary"):
         if name_in:
-            # 移除了 save_uploaded_image 逻辑
-            
             # 调用新的 add_card 函数 (写入 Google Sheets)
             add_card(name_in, card_number_in, set_in, rarity_in, price_in, quantity_in, date_in, final_image_path)
             
@@ -266,6 +269,7 @@ if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
     # 预处理
+    # 确保 id 列是数字类型
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int) 
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
@@ -347,14 +351,18 @@ else:
 
         with col_stat:
             st.caption("价格统计")
-            curr_price = target_df.iloc[-1]['price']
-            total_quantity = target_df['quantity'].sum()
-            
-            st.metric("最近成交价", f"¥{curr_price:,.0f}")
-            st.metric("📈 历史最高 / 📉 最低", f"¥{target_df['price'].max():,.0f} / ¥{target_df['price'].min():,.0f}")
-            st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
-            st.metric("📦 总库存数量", f"{total_quantity:,} 张")
-            st.write(f"共 {len(target_df)} 条记录")
+            if not target_df.empty:
+                curr_price = target_df.iloc[-1]['price']
+                total_quantity = target_df['quantity'].sum()
+                
+                st.metric("最近成交价", f"¥{curr_price:,.0f}")
+                st.metric("📈 历史最高 / 📉 最低", f"¥{target_df['price'].max():,.0f} / ¥{target_df['price'].min():,.0f}")
+                st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
+                st.metric("📦 总库存数量", f"{total_quantity:,} 张")
+                st.write(f"共 {len(target_df)} 条记录")
+            else:
+                st.info("无数据统计。")
+
 
         with col_chart:
             st.caption("价格走势图")
@@ -370,6 +378,7 @@ else:
             del_select = st.selectbox("选择要删除的记录:", filtered_df['del_label'])
             if st.button("确认删除选中记录"):
                 try:
+                    # 安全地提取 ID
                     del_id = int(del_select.split("|")[0].replace("ID:", "").strip())
                     delete_card(del_id)
                     st.success("已删除！请等待应用自动刷新。")
