@@ -13,6 +13,18 @@ SHEET_NAME = "数据表"
 # 定义 Google Sheets 字段顺序
 NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
 
+# === 辅助函数：模糊搜索规范化 (新增) ===
+def normalize_text_for_fuzzy_search(text):
+    """
+    移除空格和连字符，并转换为大写，用于忽略格式的模糊搜索匹配。
+    例如，将 'P-113' 或 'P 113' 规范化为 'P113'。
+    """
+    if pd.isna(text):
+        return ""
+    # 移除连字符 '-' 和空格 ' '
+    cleaned = str(text).replace('-', '').replace(' ', '')
+    return cleaned.upper()
+
 # === Gspread 数据库函数 ===
 
 @st.cache_resource(ttl=None)
@@ -351,20 +363,30 @@ else:
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3 = st.columns(3) 
-    with col_s1: search_name = st.text_input("搜索 名称/编号/ID") # 提示用户可以搜索 ID
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索，例如输入 'P 113' 也能匹配 'P-113' 或包含 'P113' 的卡牌名称") 
     with col_s2: search_set = st.text_input("搜索 系列/版本")
     with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
 
     # 筛选逻辑
     filtered_df = df.copy()
     if search_name:
-        # 增加 ID 字段的模糊搜索
-        search_condition = (
-            filtered_df['card_name'].str.contains(search_name, case=False, na=False) |
-            filtered_df['card_number'].str.contains(search_name, case=False, na=False) |
-            # 将 ID 转换为字符串进行模糊搜索
-            filtered_df['id'].astype(str).str.contains(search_name, case=False, na=False) 
+        # **【核心修改】增强模糊搜索逻辑**
+        
+        # 1. 清理搜索输入
+        cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
+        
+        # 2. 对需要搜索的字段进行清理和连接
+        # 创建一个包含清理后卡名、编号、ID的临时列进行搜索
+        # 使用 Series.str.cat 结合 apply 提高效率和健壮性
+        search_target = (
+            filtered_df['card_name'].astype(str).apply(normalize_text_for_fuzzy_search) + 
+            filtered_df['card_number'].astype(str).apply(normalize_text_for_fuzzy_search) + 
+            filtered_df['id'].astype(str).apply(normalize_text_for_fuzzy_search)
         )
+        
+        # 3. 执行模糊搜索 (在清理后的文本中搜索清理后的关键词)
+        search_condition = search_target.str.contains(cleaned_search_name, case=False, na=False)
+        
         filtered_df = filtered_df[search_condition]
         
     if search_set:
@@ -401,6 +423,7 @@ else:
     }
     
     # 使用 st.data_editor 实现表格编辑功能
+    # **注意**：此处使用的 filtered_df 已经应用了模糊搜索，满足用户要求。
     edited_df = st.data_editor(
         display_df,
         key="data_editor",
@@ -426,7 +449,7 @@ else:
     # --- ❌ 手动删除记录 (兼容性替代方案) ---
     st.markdown("### ❌ 手动删除记录")
     
-    # 使用 filtered_df 确保只显示筛选后的记录
+    # **注意**：此处使用的 filtered_df 已经应用了模糊搜索，满足用户要求。
     if not filtered_df.empty:
         # 筛选出 id 和 card_name，用于选择
         delete_options = filtered_df.sort_values(by='date', ascending=False)[['id', 'card_name', 'card_number']].apply(lambda x: f"ID {x['id']}: {x['card_name']} ({x['card_number']})", axis=1)
@@ -458,19 +481,19 @@ else:
         
     st.divider()
 
-    # --- 📊 深度分析面板 ---
+    # --- 📊 单卡深度分析面板 ---
     st.markdown("### 📊 单卡深度分析")
     
-    # 【确认点】：分析的起点是 filtered_df，保证了只对搜索结果进行分析
     analysis_df = filtered_df.copy() 
 
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
+        # **注意**：analysis_df 已经应用了模糊搜索。
         # 按卡牌名称、编号、等级和颜色来区分唯一变体
         analysis_df['unique_label'] = analysis_df['card_name'] + " [" + analysis_df['card_number'] + " " + analysis_df['rarity'] + " " + analysis_df['color'] + "]"
         
-        # 【确认点】：下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果
+        # 下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果，满足用户要求。
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         
