@@ -348,15 +348,22 @@ else:
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3 = st.columns(3) 
-    with col_s1: search_name = st.text_input("搜索 名称/编号")
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID") # 提示用户可以搜索 ID
     with col_s2: search_set = st.text_input("搜索 系列/版本")
     with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
 
     # 筛选逻辑
     filtered_df = df.copy()
     if search_name:
-        filtered_df = filtered_df[filtered_df['card_name'].str.contains(search_name, case=False, na=False) |
-                                  filtered_df['card_number'].str.contains(search_name, case=False, na=False)]
+        # 增加 ID 字段的模糊搜索
+        search_condition = (
+            filtered_df['card_name'].str.contains(search_name, case=False, na=False) |
+            filtered_df['card_number'].str.contains(search_name, case=False, na=False) |
+            # 将 ID 转换为字符串进行模糊搜索
+            filtered_df['id'].astype(str).str.contains(search_name, case=False, na=False) 
+        )
+        filtered_df = filtered_df[search_condition]
+        
     if search_set:
         filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
     if len(date_range) == 2:
@@ -365,8 +372,7 @@ else:
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 【修复 StreamlitAPIException 的关键步骤】
-    # 强制将 'date' 列从字符串转换为 datetime 对象，以匹配 DateColumn 的配置
+    # 强制将 'date' 列从字符串转换为 datetime 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
 
     st.markdown("### 📝 数据编辑（双击单元格修改）")
@@ -377,10 +383,10 @@ else:
     # 确保 display_df 包含 'id'
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 配置列显示名称和格式 (已移除 ButtonColumn)
+    # 配置列显示名称和格式 
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True), 
-        "date": st.column_config.DateColumn("录入时间"), # 现在数据类型已匹配
+        "date": st.column_config.DateColumn("录入时间"), 
         "card_number": "编号",
         "card_name": "卡名",
         "card_set": "系列",
@@ -417,9 +423,10 @@ else:
     # --- ❌ 手动删除记录 (兼容性替代方案) ---
     st.markdown("### ❌ 手动删除记录")
     
-    if not df.empty:
+    # 使用 filtered_df 确保只显示筛选后的记录
+    if not filtered_df.empty:
         # 筛选出 id 和 card_name，用于选择
-        delete_options = df.sort_values(by='date', ascending=False)[['id', 'card_name', 'card_number']].apply(lambda x: f"ID {x['id']}: {x['card_name']} ({x['card_number']})", axis=1)
+        delete_options = filtered_df.sort_values(by='date', ascending=False)[['id', 'card_name', 'card_number']].apply(lambda x: f"ID {x['id']}: {x['card_name']} ({x['card_number']})", axis=1)
         
         col_del_select, col_del_btn = st.columns([3, 1])
         
@@ -483,8 +490,20 @@ else:
                 curr_price = target_df.iloc[-1]['price']
                 total_quantity = target_df['quantity'].sum()
                 
+                # 获取历史最高价及对应日期
+                max_price = target_df['price'].max()
+                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
+                
+                # 获取历史最低价及对应日期
+                min_price = target_df['price'].min()
+                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
+
                 st.metric("最近成交价", f"¥{curr_price:,.0f}")
-                st.metric("📈 历史最高 / 📉 最低", f"¥{target_df['price'].max():,.0f} / ¥{target_df['price'].min():,.0f}")
+                
+                # 【修改点】：展示最高价和最低价的录入日期
+                st.markdown(f"**📈 历史最高**：¥{max_price:,.0f} (于 **{max_price_date}** 录入)")
+                st.markdown(f"**📉 历史最低**：¥{min_price:,.0f} (于 **{min_price_date}** 录入)")
+                
                 st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
                 st.metric("📦 总库存数量", f"{total_quantity:,} 张")
                 st.write(f"共 {len(target_df)} 条记录")
