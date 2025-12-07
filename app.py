@@ -1,97 +1,144 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-# 移除了 sqlite3, os, uuid (不再使用本地数据库或文件系统)
 import requests
 from bs4 import BeautifulSoup
 import re 
-import streamlit_gsheets as stg 
+# 替换为 gspread 及其辅助库
+import gspread 
+from gspread_dataframe import set_with_dataframe, get_dataframe
 
 # === 配置 ===
-# 使用固定的工作表名称
 # 注意: 如果您的 Google Sheets 标签页名称不是“数据表”，请在此处修改!
 SHEET_NAME = "数据表" 
 YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
-# 移除了 DB_NAME 和 IMAGE_FOLDER 及其相关的 os.makedirs 
 
-# === Google Sheets 数据库函数 ===
+# === Gspread 数据库函数 (使用标准 gspread 库) ===
+
+@st.cache_resource(ttl=None)
+def connect_gspread():
+    """使用 Streamlit Secrets 凭证连接到 Google Sheets API"""
+    try:
+        # 使用 st.secrets 直接加载 TOML 配置中的凭证
+        # 确保 Secrets TOML 文件中的键名一致
+        creds = {
+            "type": st.secrets["gsheets"]["type"],
+            "project_id": st.secrets["gsheets"]["project_id"],
+            "private_key_id": st.secrets["gsheets"]["private_key_id"],
+            "private_key": st.secrets["gsheets"]["private_key"],
+            "client_email": st.secrets["gsheets"]["client_email"],
+            "client_id": st.secrets["gsheets"]["client_id"],
+            "auth_uri": st.secrets["gsheets"]["auth_uri"],
+            "token_uri": st.secrets["gsheets"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["gsheets"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["gsheets"]["client_x509_cert_url"],
+            "universe_domain": st.secrets["gsheets"]["universe_domain"]
+        }
+        
+        gc = gspread.service_account_from_dict(creds)
+        spreadsheet_url = st.secrets["gsheets"]["spreadsheet_url"]
+        
+        # 移除 URL 中的 gid 参数，确保 open_by_url 正确打开整个文档
+        base_url = spreadsheet_url.split('/edit')[0] 
+        sh = gc.open_by_url(base_url)
+        
+        return sh
+    except Exception as e:
+        st.error(f"无法连接 Google Sheets API。请检查 Secrets 格式和权限。错误: {e}")
+        return None
 
 @st.cache_data(ttl=3600)
 def load_data():
     """从 Google Sheets 读取所有数据"""
+    sh = connect_gspread()
+    # 如果连接失败，返回空数据框
+    if not sh:
+        return pd.DataFrame(columns=['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url'])
+    
     try:
-        # 使用 gsheets 连接器读取数据，连接名必须与 Secrets 中的 [gsheets] 一致
-        conn = st.connection("gsheets", type=stg.GSheetsConnection)
+        # 获取指定名称的工作表
+        worksheet = sh.worksheet(SHEET_NAME) 
         
-        # 使用 read() 方法读取表格中的指定工作表
-        df = conn.read(worksheet=SHEET_NAME, ttl="10m")
+        # 使用 gspread-dataframe 读取为 DataFrame
+        df = get_dataframe(worksheet)
         
         # 确保列头匹配
         expected_columns = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
         if df.empty or not all(col in df.columns for col in expected_columns):
-             # 如果表格为空或结构不正确，返回一个带有预期列的空数据框
+            # 如果表格为空或结构不正确，返回一个带有预期列的空数据框
             return pd.DataFrame(columns=expected_columns)
 
         return df.sort_values(by='date', ascending=False)
     except Exception as e:
-        st.error(f"无法连接或读取 Google Sheets 数据。请检查 Secrets 配置和表格授权。错误: {e}")
-        # 如果出错，返回一个空数据框，防止应用崩溃
+        st.error(f"无法读取工作表 '{SHEET_NAME}'。请确保工作表名称正确。错误: {e}")
         return pd.DataFrame(columns=['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url'])
 
 
-# 更新后的 add_card 函数：直接向 Sheets 写入新行
+# 更新后的 add_card 函数：直接向 Sheets 追加行
 def add_card(name, number, card_set, rarity, price, quantity, date, image_url=None):
-    # 重新获取最新的数据，以便在末尾追加 (用于计算新ID)
-    df = load_data() 
+    sh = connect_gspread()
+    if not sh: return
     
-    # 生成新的唯一 ID。这里确保 ID 列是数字类型
     try:
-        max_id = pd.to_numeric(df['id'], errors='coerce').max()
-        new_id = int(max_id + 1) if pd.notna(max_id) else 1
-    except:
-        new_id = 1
+        worksheet = sh.worksheet(SHEET_NAME)
+        # 获取最新数据以计算 ID
+        df = load_data() 
         
-    new_data = {
-        'id': new_id,
-        'card_name': name,
-        'card_number': number,
-        'card_set': card_set,
-        'rarity': rarity,
-        'price': price,
-        'quantity': quantity,
-        'date': date.strftime('%Y-%m-%d'), # 格式化日期以便存储
-        'image_url': image_url if image_url else ""
-    }
-    
-    # 转换为 DataFrame 才能追加
-    new_df = pd.DataFrame([new_data])
-    
-    # 使用 append 方法追加新行到 Google Sheets
-    conn = st.connection("gsheets", type=stg.GSheetsConnection)
-    conn.write(worksheet=SHEET_NAME, data=new_df, ttl=0, append=True)
-    
-    # 写入后清除缓存，确保下次读取是最新数据
-    st.cache_data.clear()
+        # 生成新的唯一 ID
+        try:
+            max_id = pd.to_numeric(df['id'], errors='coerce').max()
+            new_id = int(max_id + 1) if pd.notna(max_id) else 1
+        except:
+            new_id = 1
+        
+        # 准备要追加的行数据 (必须与表格列顺序一致)
+        new_row = [
+            new_id, 
+            name, 
+            number, 
+            card_set, 
+            rarity, 
+            price, 
+            quantity, 
+            date.strftime('%Y-%m-%d'), # 格式化日期
+            image_url if image_url else ""
+        ]
+        
+        # 使用 gspread 的 append_row 方法追加
+        worksheet.append_row(new_row, value_input_option='USER_ENTERED')
+        
+        # 清除缓存
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        
+    except Exception as e:
+        st.error(f"追加数据到 Sheets 失败。错误: {e}")
 
-
-# 删除卡牌函数：通过重写整个数据框实现排除
+# 删除卡牌函数：通过重写整个数据框实现排除 (最安全的方法)
 def delete_card(card_id):
-    # 重新加载数据，确保最新的数据用于删除操作
-    df = load_data()
+    sh = connect_gspread()
+    if not sh: return
     
-    # 过滤掉要删除的行
-    df_updated = df[pd.to_numeric(df['id'], errors='coerce') != card_id]
-    
-    # 连接并覆盖整个工作表，只保留更新后的数据
-    conn = st.connection("gsheets", type=stg.GSheetsConnection)
-    # 使用 write 覆盖整个工作表，只保留需要的数据
-    # 移除临时的列 (如果存在)
-    columns_to_keep = [col for col in df.columns if col not in ['date_dt', 'unique_label']]
-    conn.write(worksheet=SHEET_NAME, data=df_updated[columns_to_keep], ttl=0, header=True)
-    
-    st.cache_data.clear()
-    
-
+    try:
+        worksheet = sh.worksheet(SHEET_NAME)
+        df = load_data()
+        
+        # 过滤掉要删除的行
+        df_updated = df[pd.to_numeric(df['id'], errors='coerce') != card_id]
+        
+        # 确保只保留需要的列
+        columns_to_keep = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
+        df_final = df_updated[columns_to_keep]
+        
+        # 覆盖工作表
+        set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
+        
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        
+    except Exception as e:
+        st.error(f"删除数据失败。错误: {e}")
+        
 # 网页抓取函数 (保持不变)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
