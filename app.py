@@ -1,20 +1,19 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import uuid
+# 移除了 sqlite3, os, uuid
 import requests
 from bs4 import BeautifulSoup
 import re 
-# 导入正确的 Google Sheets 连接器
 import streamlit_gsheets as stg 
 
 # === 配置 ===
-# 工作表名称必须与您在 Google Sheets 中创建的标签名称一致
+# 使用固定的工作表名称
 SHEET_NAME = "数据表" 
+YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
 # 移除了 DB_NAME 和 IMAGE_FOLDER 及其相关的 os.makedirs 
 
 # === Google Sheets 数据库函数 ===
-# 移除了 get_connection(), init_db()，因为 st.connection 会处理初始化。
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -24,6 +23,7 @@ def load_data():
         conn = st.connection("gsheets", type=stg.GSheetsConnection)
         
         # 使用 read() 方法读取表格中的指定工作表
+        # 注意: 这里的 worksheet 名称必须与您的 Google Sheets 中的工作表标签名称一致 (默认为 'Sheet1' 或 '数据表')
         df = conn.read(worksheet=SHEET_NAME, ttl="10m")
         
         # 确保列头匹配
@@ -40,7 +40,7 @@ def load_data():
 
 # 更新后的 add_card 函数：直接向 Sheets 写入新行
 def add_card(name, number, card_set, rarity, price, quantity, date, image_url=None):
-    # 重新获取最新的数据，以便在末尾追加
+    # 重新获取最新的数据，以便在末尾追加 (用于计算新ID)
     df = load_data() 
     
     # 生成新的唯一 ID
@@ -69,38 +69,25 @@ def add_card(name, number, card_set, rarity, price, quantity, date, image_url=No
     st.cache_data.clear()
 
 
-# 删除卡牌函数：通过删除行来实现
+# 删除卡牌函数：通过重写整个数据框实现排除
 def delete_card(card_id):
+    # 重新加载数据，确保最新的数据用于删除操作
     df = load_data()
     
-    # 找到要删除的行索引
-    row_to_delete = df[df['id'] == card_id]
-    if row_to_delete.empty:
-        st.error(f"ID {card_id} 的记录未找到。")
-        return
-
-    # Google Sheets 删除需要知道行号 (从 2 开始，因为第 1 行是列头)
-    # 找到该 ID 在原始读取数据框中的位置，然后 +2 得到 Sheets 的行号
-    # 注意：这里需要找到原始的索引位置，而不是 df.index.get_loc()
-
-    # 找到该行在 Sheets 中的物理行号 (Header is row 1, data starts at row 2)
-    # Streamlit GSheets Connection 通常基于 Pandas 索引来实现删除
-    
-    # 简单起见，我们重写整个数据框以排除该行（如果数据量不大，此方法可靠）
+    # 过滤掉要删除的行
     df_updated = df[df['id'] != card_id]
     
+    # 连接并覆盖整个工作表，只保留更新后的数据
     conn = st.connection("gsheets", type=stg.GSheetsConnection)
     # 使用 write 覆盖整个工作表，只保留需要的数据
-    conn.write(worksheet=SHEET_NAME, data=df_updated.drop(columns=['date_dt'], errors='ignore'), ttl=0, header=True)
+    # 移除临时的 'date_dt' 列 (如果存在)
+    conn.write(worksheet=SHEET_NAME, data=df_updated.drop(columns=['date_dt', 'unique_label'], errors='ignore'), ttl=0, header=True)
     
     st.cache_data.clear()
     
 
-# 移除了 save_uploaded_image 函数 (本地文件操作)
-
-# 🌟 网页抓取函数 (保留，但移除了 @st.cache_data 以防与 load_data 缓存冲突)
+# 网页抓取函数 (保持不变)
 def scrape_card_data(url):
-    # 代码内容不变...
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
         return {"error": "网址格式不正确，必须以 http 或 https 开头。"}
@@ -112,8 +99,6 @@ def scrape_card_data(url):
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # --- 1. 提取 主标题行 (包含 等级, 名称, 版本) ---
-        YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
-        
         name_tag = soup.select_one('h1')
         full_title = name_tag.get_text(strip=True) if name_tag else ""
         
@@ -122,6 +107,7 @@ def scrape_card_data(url):
         card_set = "N/A"
         
         if full_title:
+            # 1. 提取 等级 (Rarity)
             rarity_match = re.match(r'^([A-Z0-9\-]+)', full_title)
             if rarity_match:
                 card_rarity = rarity_match.group(1).strip()
@@ -130,12 +116,14 @@ def scrape_card_data(url):
                 remainder = full_title
                 card_rarity = "N/A"
             
+            # 2. 提取 名称
             name_match = re.match(r'([^(\s]+)', remainder)
             if name_match:
                 card_name = name_match.group(1).strip()
             else:
                 card_name = remainder.strip() 
 
+            # 3. 提取 版本 (Set)
             set_matches = re.findall(r'\(([^)]+)\)', full_title)
             if set_matches:
                 card_set = " / ".join(set_matches).strip()
@@ -278,14 +266,13 @@ if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
     # 预处理
-    # 确保 id 列是数字类型，防止出现浮点数
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int) 
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('')
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     df = df.dropna(subset=['date_dt']) # 删除日期无效的行，避免崩溃
-
+    
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
@@ -295,7 +282,7 @@ else:
     with col_s4: search_rarity = st.text_input("搜索 等级 (模糊)")
     with col_s5: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
 
-    # 筛选逻辑 (略过此处，与原逻辑相同)
+    # 筛选逻辑
     filtered_df = df.copy()
     if search_name:
         filtered_df = filtered_df[filtered_df['card_name'].str.contains(search_name, case=False, na=False)]
@@ -337,6 +324,7 @@ else:
     if filtered_df.empty:
         st.warning("无筛选结果。")
     else:
+        # 按卡牌名称、编号和等级来区分唯一变体
         filtered_df['unique_label'] = filtered_df['card_name'] + " [" + filtered_df['card_number'] + " " + filtered_df['rarity'] + "]"
         unique_variants = filtered_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
@@ -381,7 +369,6 @@ else:
             filtered_df['del_label'] = filtered_df.apply(lambda x: f"ID:{x['id']} | {x['date']} | {x['card_name']} ({x['card_number']}) | ¥{x['price']} x {x['quantity']}", axis=1)
             del_select = st.selectbox("选择要删除的记录:", filtered_df['del_label'])
             if st.button("确认删除选中记录"):
-                # 安全地提取 ID，避免类型错误
                 try:
                     del_id = int(del_select.split("|")[0].replace("ID:", "").strip())
                     delete_card(del_id)
@@ -389,6 +376,4 @@ else:
                 except Exception as e:
                     st.error(f"删除失败，请检查 ID 格式。错误: {e}")
                 
-                # 延迟重跑以等待 Sheets 更新完成
-                st.balloons()
                 st.rerun()
