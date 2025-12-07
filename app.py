@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 import re 
 # 替换为 gspread 及其辅助库
 import gspread 
-from gspread_dataframe import set_with_dataframe, get_dataframe
+# 修正导入方式：改为导入整个库并使用别名
+import gspread_dataframe as gd
 
 # === 配置 ===
 # 注意: 如果您的 Google Sheets 标签页名称不是“数据表”，请在此处修改!
@@ -59,8 +60,8 @@ def load_data():
         # 获取指定名称的工作表
         worksheet = sh.worksheet(SHEET_NAME) 
         
-        # 使用 gspread-dataframe 读取为 DataFrame
-        df = get_dataframe(worksheet)
+        # 使用 gspread-dataframe 读取为 DataFrame (修正: 使用别名 gd)
+        df = **gd.get_dataframe**(worksheet)
         
         # 确保列头匹配
         expected_columns = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
@@ -130,8 +131,8 @@ def delete_card(card_id):
         columns_to_keep = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
         df_final = df_updated[columns_to_keep]
         
-        # 覆盖工作表
-        set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
+        # 覆盖工作表 (修正: 使用别名 gd)
+        **gd.set_with_dataframe**(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -262,174 +263,3 @@ with st.sidebar:
     img_url_default = st.session_state['scrape_result'].get('image_url', "")
 
     # 录入字段顺序: 1.编号 -> 2.名称 -> 3.版本 -> 4.等级 -> 5.价格 -> 6.数量 -> 7.日期
-    card_number_in = st.text_input("1. 卡牌编号", value=number_default)
-    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default)
-    set_in = st.text_input("3. 系列/版本", value=set_default) 
-    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default) 
-    
-    price_in = st.number_input("5. 价格 (¥)", min_value=0.0, step=10.0)
-    quantity_in = st.number_input("6. 数量 (张)", min_value=1, step=1)
-    
-    date_in = st.date_input("7. 录入日期", datetime.now())
-
-    st.divider()
-    st.write("🖼️ 卡牌图片 (可修正)")
-    # 移除了本地上传选项
-    img_source = st.radio("选择图片来源:", ["无", "网络链接"], horizontal=True, 
-                          index=1 if img_url_default else 0) 
-
-    final_image_path = None
-    
-    if img_source == "网络链接":
-        image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
-        if image_url_input:
-            try:
-                st.image(image_url_input, caption="预览", use_container_width=True)
-                final_image_path = image_url_input
-            except: 
-                st.error("无法加载该链接的图片，请检查网址是否正确。")
-    
-    # 确定最终图片路径，对于云端部署，只能是 URL
-    if img_source == "网络链接":
-        final_image_path = image_url_input
-    else:
-        final_image_path = None
-
-    if st.button("提交录入", type="primary"):
-        if name_in:
-            # 调用新的 add_card 函数 (写入 Google Sheets)
-            add_card(name_in, card_number_in, set_in, rarity_in, price_in, quantity_in, date_in, final_image_path)
-            
-            st.session_state['scrape_result'] = {}
-            st.success(f"已录入: {name_in} - ¥{price_in} x {quantity_in} 张")
-            st.rerun()
-        else:
-            st.error("卡牌名称不能为空！")
-
-# --- 主页面 ---
-st.title("📈 卡牌历史与价格分析 Pro")
-
-# 调用新的 load_data 函数
-df = load_data()
-
-if df.empty:
-    st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
-else:
-    # 预处理
-    # 确保 id 列是数字类型
-    df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int) 
-    df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
-    df['image_url'] = df['image_url'].fillna('')
-    df['rarity'] = df['rarity'].fillna('')
-    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
-    df = df.dropna(subset=['date_dt']) # 删除日期无效的行，避免崩溃
-    
-    # --- 🔍 多维度筛选 ---
-    st.markdown("### 🔍 多维度筛选")
-    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
-    with col_s1: search_name = st.text_input("搜索 名称 (模糊)")
-    with col_s2: search_number = st.text_input("搜索 编号 (模糊)")
-    with col_s3: search_set = st.text_input("搜索 系列/版本 (模糊)")
-    with col_s4: search_rarity = st.text_input("搜索 等级 (模糊)")
-    with col_s5: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
-
-    # 筛选逻辑
-    filtered_df = df.copy()
-    if search_name:
-        filtered_df = filtered_df[filtered_df['card_name'].str.contains(search_name, case=False, na=False)]
-    if search_number:
-        filtered_df = filtered_df[filtered_df['card_number'].str.contains(search_number, case=False, na=False)]
-    if search_set:
-        filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
-    if search_rarity:
-        filtered_df = filtered_df[filtered_df['rarity'].str.contains(search_rarity, case=False, na=False)]
-    if len(date_range) == 2:
-        # 将 date_dt 转换为 date 类型进行比较
-        filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
-
-    # 展示筛选后的表格 
-    # 确保在展示前移除 date_dt，保留 date (TEXT)
-    display_df = filtered_df.drop(columns=['date_dt', 'id'], errors='ignore')
-
-    st.dataframe(
-        display_df, 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "image_url": st.column_config.ImageColumn(
-                "图片预览 (点击打开大图)", help="图片，点击后在新窗口打开", width="small"
-            ),
-            "price": st.column_config.NumberColumn(
-                "价格 (¥)", format="¥%d"
-            ),
-             "quantity": st.column_config.NumberColumn(
-                "数量 (张)", format="%d"
-            )
-        } 
-    )
-
-    st.divider()
-
-    # --- 📊 深度分析面板 ---
-    st.markdown("### 📊 单卡深度分析")
-    if filtered_df.empty:
-        st.warning("无筛选结果。")
-    else:
-        # 按卡牌名称、编号和等级来区分唯一变体
-        filtered_df['unique_label'] = filtered_df['card_name'] + " [" + filtered_df['card_number'] + " " + filtered_df['rarity'] + "]"
-        unique_variants = filtered_df['unique_label'].unique()
-        selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
-        
-        target_df = filtered_df[filtered_df['unique_label'] == selected_variant].sort_values("date_dt")
-        
-        col_img, col_stat, col_chart = st.columns([1, 1, 2])
-        
-        with col_img:
-            st.caption("卡牌快照 (最近一笔)")
-            latest_img = target_df.iloc[-1]['image_url']
-            if latest_img:
-                try:
-                    st.image(latest_img, use_container_width=True) 
-                except:
-                    st.error("图片加载失败")
-            else:
-                st.empty()
-                st.caption("暂无图片")
-
-        with col_stat:
-            st.caption("价格统计")
-            if not target_df.empty:
-                curr_price = target_df.iloc[-1]['price']
-                total_quantity = target_df['quantity'].sum()
-                
-                st.metric("最近成交价", f"¥{curr_price:,.0f}")
-                st.metric("📈 历史最高 / 📉 最低", f"¥{target_df['price'].max():,.0f} / ¥{target_df['price'].min():,.0f}")
-                st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
-                st.metric("📦 总库存数量", f"{total_quantity:,} 张")
-                st.write(f"共 {len(target_df)} 条记录")
-            else:
-                st.info("无数据统计。")
-
-
-        with col_chart:
-            st.caption("价格走势图")
-            if len(target_df) > 1:
-                st.line_chart(target_df, x="date", y="price", color="#FF4B4B")
-            else:
-                st.info("需至少两条记录绘制走势")
-
-    # --- 🗑️ 数据管理 ---
-    with st.expander("🗑️ 数据管理 (删除记录)"):
-        if not filtered_df.empty:
-            filtered_df['del_label'] = filtered_df.apply(lambda x: f"ID:{x['id']} | {x['date']} | {x['card_name']} ({x['card_number']}) | ¥{x['price']} x {x['quantity']}", axis=1)
-            del_select = st.selectbox("选择要删除的记录:", filtered_df['del_label'])
-            if st.button("确认删除选中记录"):
-                try:
-                    # 安全地提取 ID
-                    del_id = int(del_select.split("|")[0].replace("ID:", "").strip())
-                    delete_card(del_id)
-                    st.success("已删除！请等待应用自动刷新。")
-                except Exception as e:
-                    st.error(f"删除失败，请检查 ID 格式。错误: {e}")
-                
-                st.rerun()
