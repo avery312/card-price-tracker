@@ -1,0 +1,5 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+streamlit-gsheets-connection  # 新增的 Google Sheets 连接库
