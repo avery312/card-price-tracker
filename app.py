@@ -13,7 +13,7 @@ SHEET_NAME = "数据表"
 # 定义 Google Sheets 字段顺序
 NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
 
-# === 辅助函数：模糊搜索规范化 (新增) ===
+# === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
     """
     移除空格和连字符，并转换为大写，用于忽略格式的模糊搜索匹配。
@@ -357,6 +357,8 @@ else:
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
     df['color'] = df['color'].fillna('') 
+    df['card_set'] = df['card_set'].fillna('') # 确保系列不为 NaN
+    df['card_number'] = df['card_number'].fillna('') # 确保编号不为 NaN
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     df = df.dropna(subset=['date_dt']) 
     
@@ -370,14 +372,10 @@ else:
     # 筛选逻辑
     filtered_df = df.copy()
     if search_name:
-        # **【核心修改】增强模糊搜索逻辑**
-        
         # 1. 清理搜索输入
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
         
         # 2. 对需要搜索的字段进行清理和连接
-        # 创建一个包含清理后卡名、编号、ID的临时列进行搜索
-        # 使用 Series.str.cat 结合 apply 提高效率和健壮性
         search_target = (
             filtered_df['card_name'].astype(str).apply(normalize_text_for_fuzzy_search) + 
             filtered_df['card_number'].astype(str).apply(normalize_text_for_fuzzy_search) + 
@@ -423,7 +421,6 @@ else:
     }
     
     # 使用 st.data_editor 实现表格编辑功能
-    # **注意**：此处使用的 filtered_df 已经应用了模糊搜索，满足用户要求。
     edited_df = st.data_editor(
         display_df,
         key="data_editor",
@@ -446,18 +443,19 @@ else:
     
     st.divider()
     
-    # --- ❌ 手动删除记录 (兼容性替代方案) ---
+    # --- ❌ 手动删除记录 (增强展示内容) ---
     st.markdown("### ❌ 手动删除记录")
     
-    # **注意**：此处使用的 filtered_df 已经应用了模糊搜索，满足用户要求。
     if not filtered_df.empty:
-        # 筛选出 id 和 card_name，用于选择
-        delete_options = filtered_df.sort_values(by='date', ascending=False)[['id', 'card_name', 'card_number']].apply(lambda x: f"ID {x['id']}: {x['card_name']} ({x['card_number']})", axis=1)
+        # 【修改点】：增强删除记录的显示内容
+        delete_options = filtered_df.sort_values(by='date', ascending=False).apply(
+            lambda x: f"ID {x['id']} | {x['date']} | {x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']} @ ¥{x['price']:,.0f}", 
+            axis=1
+        )
         
         col_del_select, col_del_btn = st.columns([3, 1])
         
         with col_del_select:
-            # 确保 selectbox 在没有选项时不报错
             if not delete_options.empty:
                 selected_delete_option = st.selectbox("选择要删除的记录:", delete_options)
             else:
@@ -465,7 +463,7 @@ else:
         
         if selected_delete_option:
             # 从选中的字符串中提取 ID
-            delete_id_match = re.search(r'ID (\d+):', selected_delete_option)
+            delete_id_match = re.search(r'ID (\d+)\s*\|', selected_delete_option)
             card_id_to_delete = int(delete_id_match.group(1)) if delete_id_match else None
             
             with col_del_btn:
@@ -481,7 +479,7 @@ else:
         
     st.divider()
 
-    # --- 📊 单卡深度分析面板 ---
+    # --- 📊 单卡深度分析面板 (增强展示内容) ---
     st.markdown("### 📊 单卡深度分析")
     
     analysis_df = filtered_df.copy() 
@@ -489,14 +487,17 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # **注意**：analysis_df 已经应用了模糊搜索。
-        # 按卡牌名称、编号、等级和颜色来区分唯一变体
-        analysis_df['unique_label'] = analysis_df['card_name'] + " [" + analysis_df['card_number'] + " " + analysis_df['rarity'] + " " + analysis_df['color'] + "]"
+        # 【修改点】：使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
+        analysis_df['unique_label'] = analysis_df.apply(
+            lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
+            axis=1
+        )
         
-        # 下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果，满足用户要求。
+        # 下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果。
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         
+        # 使用选定的唯一标签进行筛选
         target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
