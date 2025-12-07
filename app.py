@@ -202,7 +202,10 @@ def scrape_card_data(url):
             temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
         # 3. 提取 card_number
-        number_match = re.search(r'([A-Z]{2,}\d{1,}\-\d{3,})', temp_title) 
+        # 【修改点】：使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
+        # 匹配格式： [1+字母/数字] - [2+数字]
+        number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
+        
         if number_match:
             card_number = number_match.group(1).strip()
             temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
@@ -220,15 +223,15 @@ def scrape_card_data(url):
             
         card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
         
-        # --- 5. 提取图片链接 (优化后的代码) ---
+        # --- 5. 提取图片链接 ---
         image_url = None
         
-        # 优先级 1: 尝试通过 og:image meta 标签获取 (最可靠的方法，适用于 Mercadop 等网站)
+        # 优先级 1: 尝试通过 og:image meta 标签获取 (适用于 Mercadop 等网站)
         og_image_tag = soup.find('meta', property='og:image')
         if og_image_tag:
             image_url = og_image_tag.get('content')
             
-        # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索 (兼容其他网站)
+        # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索
         if not image_url:
             image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
                         soup.find('img', {'alt': lambda x: x and card_name in x})
@@ -492,15 +495,17 @@ else:
                 
                 # 获取历史最高价及对应日期
                 max_price = target_df['price'].max()
+                # 找到所有匹配最高价的记录，取第一条的日期
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
                 
                 # 获取历史最低价及对应日期
                 min_price = target_df['price'].min()
+                # 找到所有匹配最低价的记录，取第一条的日期
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
 
                 st.metric("最近成交价", f"¥{curr_price:,.0f}")
                 
-                # 【修改点】：展示最高价和最低价的录入日期
+                # 展示最高价和最低价的录入日期
                 st.markdown(f"**📈 历史最高**：¥{max_price:,.0f} (于 **{max_price_date}** 录入)")
                 st.markdown(f"**📉 历史最低**：¥{min_price:,.0f} (于 **{min_price_date}** 录入)")
                 
