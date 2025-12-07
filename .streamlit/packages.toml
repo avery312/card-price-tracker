@@ -1,5 +1,4 @@
 # .streamlit/packages.toml
 
 [dependencies]
-# 强制使用 Python 3.11，这是 Streamlit Cloud 中一个稳定且兼容许多库的版本。
 python_version = "3.11"
