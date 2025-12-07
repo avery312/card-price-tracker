@@ -267,15 +267,19 @@ def scrape_card_data(url):
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
+# 新增：用于存储被选中的放大图 URL
+if 'magnify_image_url' not in st.session_state:
+    st.session_state['magnify_image_url'] = None
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['scrape_url_input'] = ""
+    st.session_state['magnify_image_url'] = None # 清除放大图
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
 
-# --- 侧边栏：录入 ---
+# --- 侧边栏：录入 & 放大图显示 (修改点：新增放大图显示) ---
 with st.sidebar:
     st.header("🌐 网页自动填充")
     
@@ -298,6 +302,17 @@ with st.sidebar:
         st.button("一键清除录入内容", type="primary", on_click=clear_all_data)
 
     st.divider()
+    
+    # 放大图显示逻辑 (新增)
+    if st.session_state.get('magnify_image_url'):
+        st.header("🖼️ 选中卡牌放大图")
+        st.caption("在表格中点击左侧空白区域选择一行即可放大。")
+        try:
+            st.image(st.session_state['magnify_image_url'], use_container_width=True)
+        except:
+            st.warning("放大图加载失败或链接无效。")
+        st.divider()
+        
     st.header("📝 手动录入/修正")
     
     # 预填充抓取结果
@@ -339,6 +354,7 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
+            st.session_state['magnify_image_url'] = None # 清除放大图
             st.success(f"已录入: {name_in}")
             st.rerun()
         else:
@@ -398,7 +414,7 @@ else:
     # 强制将 'date' 列从字符串转换为 datetime 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
 
-    st.markdown("### 📝 数据编辑（双击单元格修改）")
+    st.markdown("### 📝 数据编辑（双击单元格修改 / 单击行放大卡图）")
     
     # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -417,7 +433,8 @@ else:
         "quantity": st.column_config.NumberColumn("数量 (张)", format="%d"),
         "rarity": "等级", 
         "color": "颜色",
-        "image_url": st.column_config.ImageColumn("卡图", width="small"),
+        # 修改点：ImageColumn宽度减小，以作为可点击（可选中）的缩略图
+        "image_url": st.column_config.ImageColumn("卡图", width="extra small"),
     }
     
     # 使用 st.data_editor 实现表格编辑功能
@@ -428,9 +445,33 @@ else:
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
+        # 新增：启用单行选择模式
+        selection_mode="single-row",
     )
 
-    # 检查是否有编辑变动
+    # 逻辑：检查是否有行被选中，并更新放大图的 URL
+    # st.session_state.data_editor 存储了选择信息
+    selected_indices = st.session_state.data_editor.get("selection", {}).get("rows")
+    
+    if selected_indices:
+        # 仅处理第一个选中的行
+        selected_index = selected_indices[0]
+        # 使用 display_df 的索引获取完整的行数据
+        selected_row = display_df.iloc[selected_index]
+        selected_image_url = selected_row.get("image_url")
+        
+        # 更新 Session State
+        if selected_image_url != st.session_state['magnify_image_url']:
+            st.session_state['magnify_image_url'] = selected_image_url
+            st.rerun() # 重新运行以立即更新 sidebar
+            
+    # 如果没有选中任何行，清除放大图
+    elif st.session_state['magnify_image_url'] is not None:
+        st.session_state['magnify_image_url'] = None
+        st.rerun() 
+
+
+    # 检查是否有编辑变动 (独立于选择逻辑)
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
         st.caption("检测到数据修改，请点击 **保存修改** 按钮。")
         
@@ -447,7 +488,7 @@ else:
     st.markdown("### ❌ 手动删除记录")
     
     if not filtered_df.empty:
-        # 【修改点】：增强删除记录的显示内容
+        # 增强删除记录的显示内容
         delete_options = filtered_df.sort_values(by='date', ascending=False).apply(
             lambda x: f"ID {x['id']} | {x['date']} | {x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']} @ ¥{x['price']:,.0f}", 
             axis=1
@@ -487,7 +528,7 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # 【修改点】：使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
+        # 使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
         analysis_df['unique_label'] = analysis_df.apply(
             lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
             axis=1
@@ -502,17 +543,21 @@ else:
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
         
+        # 修改点：将卡牌快照信息移到统计下方，图像主显示功能已移到侧边栏
         with col_img:
             st.caption("卡牌快照 (最近一笔)")
             latest_img = target_df.iloc[-1]['image_url']
             if latest_img:
                 try:
+                    # 提示用户可以通过点击表格行来放大图片
                     st.image(latest_img, use_container_width=True) 
+                    st.caption("提示: 在主表格中选中行可于侧边栏固定放大")
                 except:
                     st.error("图片加载失败")
             else:
                 st.empty()
                 st.caption("暂无图片")
+
 
         with col_stat:
             st.caption("价格统计")
