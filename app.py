@@ -1,95 +1,110 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import uuid
 import requests
 from bs4 import BeautifulSoup
 import re 
-import uuid
-from streamlit_gsheets import GSheetsConnection
+# 导入正确的 Google Sheets 连接器
+import streamlit_gsheets as stg 
 
-# === 配置及常量 ===
-SHEET_NAME = "数据表"  # 你的 Google Sheets 表格底部标签名称，请确保与你的表格名称一致
-YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
-# 移除 DB_NAME 和 IMAGE_FOLDER 常量
+# === 配置 ===
+# 工作表名称必须与您在 Google Sheets 中创建的标签名称一致
+SHEET_NAME = "数据表" 
+# 移除了 DB_NAME 和 IMAGE_FOLDER 及其相关的 os.makedirs 
 
-# === 数据库函数 (现为 Google Sheets 函数) ===
+# === Google Sheets 数据库函数 ===
+# 移除了 get_connection(), init_db()，因为 st.connection 会处理初始化。
 
-def get_gsheets_connection():
-    """建立与 Google Sheets 的连接"""
-    # 这里的 'gsheets' 对应 .streamlit/secrets.toml 中的 [gsheets] 配置
-    return st.connection("gsheets", type=GSheetsConnection)
-
-# init_db 函数现在仅用于加载数据和确保连接正常
-def init_db():
-    """初始化数据库，确保连接正常并返回数据"""
+@st.cache_data(ttl=3600)
+def load_data():
+    """从 Google Sheets 读取所有数据"""
     try:
-        conn = get_gsheets_connection()
-        # 尝试读取数据，确保表存在（在 Sheets 中即为确保工作表存在）
-        df = conn.read(worksheet=SHEET_NAME)
-        return df
-    except Exception as e:
-        st.error(f"无法连接到 Google Sheets 或读取工作表 '{SHEET_NAME}'。请检查 secrets.toml 配置和工作表名称是否正确。错误: {e}")
-        return pd.DataFrame() # 返回空 DataFrame 避免应用崩溃
-
-# 移除 init_db() 中的 SQLite 表结构创建和列检查逻辑
-
-# 替换 add_card 函数
-def add_card(name, number, card_set, rarity, price, quantity, date, image_url=None):
-    conn = get_gsheets_connection()
-    
-    # 1. 创建新的记录行
-    new_data = pd.DataFrame([{
-        "id": str(uuid.uuid4()), # 使用 UUID 作为唯一ID
-        "card_name": name,
-        "card_number": number,
-        "card_set": card_set,
-        "rarity": rarity,
-        "price": price,
-        "quantity": quantity,
-        "date": date.strftime('%Y-%m-%d'), # 确保日期格式统一
-        "image_url": image_url if image_url else ""
-    }])
-    
-    # 2. 将数据追加到 Google Sheets
-    conn.append(data=new_data, worksheet=SHEET_NAME)
-
-# 替换 delete_card 函数
-def delete_card(card_id):
-    conn = get_gsheets_connection()
-    df = load_data(conn) # 重新加载当前所有数据
-    
-    # 过滤掉要删除的行
-    df_updated = df[df['id'] != str(card_id)]
-    
-    # 将整个更新后的 DataFrame 写回 Google Sheets
-    # 注意：Google Sheets 写入需要覆盖模式
-    conn.write(data=df_updated, worksheet=SHEET_NAME)
-
-# 替换 load_data 函数
-def load_data(conn=None):
-    if conn is None:
-        conn = get_gsheets_connection()
+        # 使用 gsheets 连接器读取数据，连接名必须与 Secrets 中的 [gsheets] 一致
+        conn = st.connection("gsheets", type=stg.GSheetsConnection)
         
-    try:
-        # 读取整个工作表到 DataFrame
-        df = conn.read(worksheet=SHEET_NAME, ttl=5) # ttl=5 秒，控制数据刷新频率
-        # 确保 id 列是字符串类型，以便比较
-        df['id'] = df['id'].astype(str)
-        return df
+        # 使用 read() 方法读取表格中的指定工作表
+        df = conn.read(worksheet=SHEET_NAME, ttl="10m")
+        
+        # 确保列头匹配
+        expected_columns = ['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url']
+        if df.empty or not all(col in df.columns for col in expected_columns):
+             # 如果表格为空或结构不正确，返回一个空的数据框
+            return pd.DataFrame(columns=expected_columns)
+
+        return df.sort_values(by='date', ascending=False)
     except Exception as e:
-        st.error(f"加载数据失败: {e}")
-        return pd.DataFrame()
+        st.error(f"无法连接或读取 Google Sheets 数据。请检查 Secrets 配置和表格授权。错误: {e}")
+        return pd.DataFrame(columns=['id', 'card_name', 'card_number', 'card_set', 'rarity', 'price', 'quantity', 'date', 'image_url'])
 
-# 移除 save_uploaded_image 函数
 
-# 网页抓取函数 (保持不变，因为不涉及本地文件)
-@st.cache_data(ttl=3600) 
+# 更新后的 add_card 函数：直接向 Sheets 写入新行
+def add_card(name, number, card_set, rarity, price, quantity, date, image_url=None):
+    # 重新获取最新的数据，以便在末尾追加
+    df = load_data() 
+    
+    # 生成新的唯一 ID
+    new_id = int(df['id'].max() + 1) if not df.empty and pd.notna(df['id'].max()) else 1
+    
+    new_data = {
+        'id': new_id,
+        'card_name': name,
+        'card_number': number,
+        'card_set': card_set,
+        'rarity': rarity,
+        'price': price,
+        'quantity': quantity,
+        'date': date.strftime('%Y-%m-%d'), # 格式化日期以便存储
+        'image_url': image_url if image_url else ""
+    }
+    
+    # 转换为 DataFrame 才能追加
+    new_df = pd.DataFrame([new_data])
+    
+    # 使用 append 方法追加新行到 Google Sheets
+    conn = st.connection("gsheets", type=stg.GSheetsConnection)
+    conn.write(worksheet=SHEET_NAME, data=new_df, ttl=0, append=True)
+    
+    # 写入后清除缓存，确保下次读取是最新数据
+    st.cache_data.clear()
+
+
+# 删除卡牌函数：通过删除行来实现
+def delete_card(card_id):
+    df = load_data()
+    
+    # 找到要删除的行索引
+    row_to_delete = df[df['id'] == card_id]
+    if row_to_delete.empty:
+        st.error(f"ID {card_id} 的记录未找到。")
+        return
+
+    # Google Sheets 删除需要知道行号 (从 2 开始，因为第 1 行是列头)
+    # 找到该 ID 在原始读取数据框中的位置，然后 +2 得到 Sheets 的行号
+    # 注意：这里需要找到原始的索引位置，而不是 df.index.get_loc()
+
+    # 找到该行在 Sheets 中的物理行号 (Header is row 1, data starts at row 2)
+    # Streamlit GSheets Connection 通常基于 Pandas 索引来实现删除
+    
+    # 简单起见，我们重写整个数据框以排除该行（如果数据量不大，此方法可靠）
+    df_updated = df[df['id'] != card_id]
+    
+    conn = st.connection("gsheets", type=stg.GSheetsConnection)
+    # 使用 write 覆盖整个工作表，只保留需要的数据
+    conn.write(worksheet=SHEET_NAME, data=df_updated.drop(columns=['date_dt'], errors='ignore'), ttl=0, header=True)
+    
+    st.cache_data.clear()
+    
+
+# 移除了 save_uploaded_image 函数 (本地文件操作)
+
+# 🌟 网页抓取函数 (保留，但移除了 @st.cache_data 以防与 load_data 缓存冲突)
 def scrape_card_data(url):
+    # 代码内容不变...
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
         return {"error": "网址格式不正确，必须以 http 或 https 开头。"}
     
-    # (网页抓取逻辑不变...)
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status() 
@@ -97,6 +112,8 @@ def scrape_card_data(url):
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # --- 1. 提取 主标题行 (包含 等级, 名称, 版本) ---
+        YUYU_TEI_BASE_IMAGE_URL = 'https://card.yuyu-tei.jp/opc/front/' 
+        
         name_tag = soup.select_one('h1')
         full_title = name_tag.get_text(strip=True) if name_tag else ""
         
@@ -105,7 +122,6 @@ def scrape_card_data(url):
         card_set = "N/A"
         
         if full_title:
-            # 1. 提取 等级 (Rarity)
             rarity_match = re.match(r'^([A-Z0-9\-]+)', full_title)
             if rarity_match:
                 card_rarity = rarity_match.group(1).strip()
@@ -114,14 +130,12 @@ def scrape_card_data(url):
                 remainder = full_title
                 card_rarity = "N/A"
             
-            # 2. 提取 名称
             name_match = re.match(r'([^(\s]+)', remainder)
             if name_match:
                 card_name = name_match.group(1).strip()
             else:
                 card_name = remainder.strip() 
 
-            # 3. 提取 版本 (Set)
             set_matches = re.findall(r'\(([^)]+)\)', full_title)
             if set_matches:
                 card_set = " / ".join(set_matches).strip()
@@ -160,18 +174,19 @@ def scrape_card_data(url):
     except Exception as e:
         return {"error": f"解析网页时发生错误: {e}. 请检查HTML结构是否变化。"}
 
-
-# --- Streamlit Session State & UI ---
+# --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
     
+# --- 清除函数 (使用 on_click 模式) ---
 def clear_all_data():
+    """在点击时执行的回调函数，用于清除所有 session state 数据，包括 URL 输入框的内容"""
     st.session_state['scrape_result'] = {} 
     st.session_state['scrape_url_input'] = ""
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
-df = init_db() # 使用新的 init_db 加载数据
+# init_db() 已删除
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
@@ -212,83 +227,168 @@ with st.sidebar:
     set_in = st.text_input("3. 系列/版本", value=set_default) 
     rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default) 
     
-    # --- 字段调整：移除品相，增加数量 ---
     price_in = st.number_input("5. 价格 (¥)", min_value=0.0, step=10.0)
     quantity_in = st.number_input("6. 数量 (张)", min_value=1, step=1)
-    # ------------------------------------
     
     date_in = st.date_input("7. 录入日期", datetime.now())
 
     st.divider()
-    st.write("🖼️ 卡牌图片 (请使用网络链接)")
-    
-    # 移除 radio 选项，只保留 URL 输入
-    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
-    
-    final_image_path = None
-    if image_url_input:
-        try:
-            st.image(image_url_input, caption="预览", use_container_width=True)
-            final_image_path = image_url_input
-        except: 
-            st.error("无法加载该链接的图片，请检查网址是否正确。")
+    st.write("🖼️ 卡牌图片 (可修正)")
+    # 移除了本地上传选项
+    img_source = st.radio("选择图片来源:", ["无", "网络链接"], horizontal=True, 
+                          index=1 if img_url_default else 0) 
 
+    final_image_path = None
+    
+    if img_source == "网络链接":
+        image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
+        if image_url_input:
+            try:
+                st.image(image_url_input, caption="预览", use_container_width=True)
+                final_image_path = image_url_input
+            except: 
+                st.error("无法加载该链接的图片，请检查网址是否正确。")
+    
+    # 确定最终图片路径，对于云端部署，只能是 URL
+    if img_source == "网络链接":
+        final_image_path = image_url_input
+    else:
+        final_image_path = None
 
     if st.button("提交录入", type="primary"):
         if name_in:
-            # final_image_path 已经是 URL
+            # 移除了 save_uploaded_image 逻辑
             
-            # 调用更新后的 add_card 函数 (price, quantity)
+            # 调用新的 add_card 函数 (写入 Google Sheets)
             add_card(name_in, card_number_in, set_in, rarity_in, price_in, quantity_in, date_in, final_image_path)
+            
             st.session_state['scrape_result'] = {}
             st.success(f"已录入: {name_in} - ¥{price_in} x {quantity_in} 张")
-            
-            # 清除缓存并重新加载数据，以便在主页面即时显示
-            st.cache_data.clear() 
             st.rerun()
         else:
             st.error("卡牌名称不能为空！")
 
-# --- 主页面 (保持不变，因为 load_data 返回的仍是 DataFrame) ---
+# --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
+# 调用新的 load_data 函数
+df = load_data()
+
 if df.empty:
-    st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据，或检查 Google Sheets 连接。")
+    st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
     # 预处理
-    # 确保 'id' 列是字符串，且 'date' 列是 datetime 对象
-    df['id'] = df['id'].astype(str) 
-    df['date_dt'] = pd.to_datetime(df['date'])
+    # 确保 id 列是数字类型，防止出现浮点数
+    df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int) 
+    df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('')
-    df['quantity'] = df['quantity'].fillna(1).astype(int) 
-    
-    # ... (其余展示和分析逻辑保持不变)
-    
-    # (此处省略其余展示和分析逻辑，请在您的 app.py 中保留)
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
+    df = df.dropna(subset=['date_dt']) # 删除日期无效的行，避免崩溃
 
-    # ... (接下来的代码逻辑与原代码保持一致)
+    # --- 🔍 多维度筛选 ---
+    st.markdown("### 🔍 多维度筛选")
+    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+    with col_s1: search_name = st.text_input("搜索 名称 (模糊)")
+    with col_s2: search_number = st.text_input("搜索 编号 (模糊)")
+    with col_s3: search_set = st.text_input("搜索 系列/版本 (模糊)")
+    with col_s4: search_rarity = st.text_input("搜索 等级 (模糊)")
+    with col_s5: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
+
+    # 筛选逻辑 (略过此处，与原逻辑相同)
+    filtered_df = df.copy()
+    if search_name:
+        filtered_df = filtered_df[filtered_df['card_name'].str.contains(search_name, case=False, na=False)]
+    if search_number:
+        filtered_df = filtered_df[filtered_df['card_number'].str.contains(search_number, case=False, na=False)]
+    if search_set:
+        filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
+    if search_rarity:
+        filtered_df = filtered_df[filtered_df['rarity'].str.contains(search_rarity, case=False, na=False)]
+    if len(date_range) == 2:
+        # 将 date_dt 转换为 date 类型进行比较
+        filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
+
+    # 展示筛选后的表格 
+    # 确保在展示前移除 date_dt，保留 date (TEXT)
+    display_df = filtered_df.drop(columns=['date_dt', 'id'], errors='ignore')
+
+    st.dataframe(
+        display_df, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "image_url": st.column_config.ImageColumn(
+                "图片预览 (点击打开大图)", help="图片，点击后在新窗口打开", width="small"
+            ),
+            "price": st.column_config.NumberColumn(
+                "价格 (¥)", format="¥%d"
+            ),
+             "quantity": st.column_config.NumberColumn(
+                "数量 (张)", format="%d"
+            )
+        } 
+    )
+
+    st.divider()
+
+    # --- 📊 深度分析面板 ---
+    st.markdown("### 📊 单卡深度分析")
+    if filtered_df.empty:
+        st.warning("无筛选结果。")
+    else:
+        filtered_df['unique_label'] = filtered_df['card_name'] + " [" + filtered_df['card_number'] + " " + filtered_df['rarity'] + "]"
+        unique_variants = filtered_df['unique_label'].unique()
+        selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
+        
+        target_df = filtered_df[filtered_df['unique_label'] == selected_variant].sort_values("date_dt")
+        
+        col_img, col_stat, col_chart = st.columns([1, 1, 2])
+        
+        with col_img:
+            st.caption("卡牌快照 (最近一笔)")
+            latest_img = target_df.iloc[-1]['image_url']
+            if latest_img:
+                try:
+                    st.image(latest_img, use_container_width=True) 
+                except:
+                    st.error("图片加载失败")
+            else:
+                st.empty()
+                st.caption("暂无图片")
+
+        with col_stat:
+            st.caption("价格统计")
+            curr_price = target_df.iloc[-1]['price']
+            total_quantity = target_df['quantity'].sum()
+            
+            st.metric("最近成交价", f"¥{curr_price:,.0f}")
+            st.metric("📈 历史最高 / 📉 最低", f"¥{target_df['price'].max():,.0f} / ¥{target_df['price'].min():,.0f}")
+            st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
+            st.metric("📦 总库存数量", f"{total_quantity:,} 张")
+            st.write(f"共 {len(target_df)} 条记录")
+
+        with col_chart:
+            st.caption("价格走势图")
+            if len(target_df) > 1:
+                st.line_chart(target_df, x="date", y="price", color="#FF4B4B")
+            else:
+                st.info("需至少两条记录绘制走势")
 
     # --- 🗑️ 数据管理 ---
     with st.expander("🗑️ 数据管理 (删除记录)"):
-        if not df.empty:
-            # 使用整个 DataFrame，而不是 filtered_df，以确保能删除所有记录
-            df_display = df.sort_values(by='date_dt', ascending=False)
-            
-            # 更新 del_label 以显示数量
-            df_display['del_label'] = df_display.apply(lambda x: f"ID:{x['id'][:8]}... | {x['date']} | {x['card_name']} ({x['card_number']}) | ¥{x['price']} x {x['quantity']}", axis=1)
-            
-            del_select = st.selectbox("选择要删除的记录:", df_display['del_label'])
-            
+        if not filtered_df.empty:
+            filtered_df['del_label'] = filtered_df.apply(lambda x: f"ID:{x['id']} | {x['date']} | {x['card_name']} ({x['card_number']}) | ¥{x['price']} x {x['quantity']}", axis=1)
+            del_select = st.selectbox("选择要删除的记录:", filtered_df['del_label'])
             if st.button("确认删除选中记录"):
-                # 从 del_select 中提取完整的 UUID
-                selected_uuid_prefix = del_select.split("|")[0].replace("ID:", "").replace("...", "").strip()
-                # 找到匹配 UUID 前缀的完整 ID
-                full_id_to_delete = df_display[df_display['id'].str.startswith(selected_uuid_prefix)]['id'].iloc[0]
+                # 安全地提取 ID，避免类型错误
+                try:
+                    del_id = int(del_select.split("|")[0].replace("ID:", "").strip())
+                    delete_card(del_id)
+                    st.success("已删除！请等待应用自动刷新。")
+                except Exception as e:
+                    st.error(f"删除失败，请检查 ID 格式。错误: {e}")
                 
-                delete_card(full_id_to_delete)
-                st.success("已删除！")
-                st.cache_data.clear() 
+                # 延迟重跑以等待 Sheets 更新完成
+                st.balloons()
                 st.rerun()
-
-# 剩余代码保持原样...
