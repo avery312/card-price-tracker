@@ -18,12 +18,13 @@ if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
+
+# 【关键修改 1】：新增/初始化用于控制滚动和消息的状态
+if 'submission_successful' not in st.session_state: 
+    st.session_state['submission_successful'] = False
+if 'submitted_card_name' not in st.session_state: 
+    st.session_state['submitted_card_name'] = "" 
 # 移除了 data_version 变量
-
-# 新增：用于在录入后返回顶部的状态
-if 'submission_success_message' not in st.session_state: 
-    st.session_state['submission_success_message'] = None
-
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
@@ -296,8 +297,9 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # **关键修改：将成功消息存入 session state**
-            st.session_state['submission_success_message'] = f"✅ 已成功录入: {name_in}。页面已自动返回顶部。"
+            # 【关键修改 2】：设置成功状态和卡牌名
+            st.session_state['submission_successful'] = True
+            st.session_state['submitted_card_name'] = name_in
             
             # 强制重新执行脚本
             st.rerun() 
@@ -307,11 +309,14 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# **关键修改：在主页面顶部检查并显示成功消息**
-if st.session_state.submission_success_message:
-    st.success(st.session_state.submission_success_message)
-    # 清除消息，防止在后续操作中反复显示
-    st.session_state['submission_success_message'] = None
+# 【关键修改 3】：在主页面顶部检查并显示成功消息，迫使页面回到顶部
+if st.session_state.get('submission_successful'):
+    card_name = st.session_state.get('submitted_card_name', '一张卡牌')
+    # 显示成功消息，该消息将成为页面顶部的新元素
+    st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
+    # 清除状态，防止在后续操作中反复显示
+    st.session_state['submission_successful'] = False
+    st.session_state['submitted_card_name'] = ""
 
 
 # 🔑 load_data() 每次 rerun 都会执行数据库读取
