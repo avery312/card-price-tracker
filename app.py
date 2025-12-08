@@ -160,21 +160,21 @@ def update_data_and_save(edited_df):
     try:
         worksheet = sh.worksheet(SHEET_NAME)
         
-        # データ型クリーニングとフォーマット
+        # 数据类型清理和格式化
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        # 列順序の確認と欠損値の処理
+        # 确保列顺序并处理缺失值
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         
-        # ワークシートを上書き保存
+        # 覆盖工作表
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.success("数据修改已自动保存到 Google 表格！") # 日本語での応答のため、メッセージはそのままにしておきます
+        st.success("数据修改已自动保存到 Google 表格！") 
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
@@ -206,13 +206,15 @@ def scrape_card_data(url):
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
-            temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
+            # 【修正】将匹配到的部分替换为空字符串，以确保后续提取的字符串干净
+            temp_title = temp_title.replace(rarity_match.group(0), '').strip()
         
         # 2. 提取 color
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
-            temp_title = temp_title.replace(color_match.group(0), ' ').strip()
+            # 【修正】将匹配到的部分替换为空字符串，以确保后续提取的字符串干净
+            temp_title = temp_title.replace(color_match.group(0), '').strip()
         
         # 3. 提取 card_number
         # 使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
@@ -221,12 +223,14 @@ def scrape_card_data(url):
         
         if number_match:
             card_number = number_match.group(1).strip()
-            temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
+            # 【修正】将匹配到的卡号替换为空字符串，以确保后续提取的字符串干净
+            temp_title_without_number = temp_title.replace(number_match.group(0), '').strip()
         else:
-            temp_title_without_number = temp_title
+            temp_title_without_number = temp_title.strip()
         
         # 4. 提取 card_set 和 card_name
-        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
+        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number)
+        
         if name_part:
             card_name = name_part.group(1).strip()
             card_set = temp_title_without_number[len(name_part.group(0)):].strip()
@@ -268,13 +272,13 @@ def scrape_card_data(url):
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
-if 'form_key_suffix' not in st.session_state: # 【新增】用于强制重置表单
+if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['scrape_url_input'] = ""
-    st.session_state['form_key_suffix'] += 1 # 【新增】递增 suffix 以重置所有输入框
+    st.session_state['form_key_suffix'] += 1 
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
@@ -407,7 +411,7 @@ else:
     # 强制将 'date' 列从字符串转换为 datetime 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
 
-    st.markdown("### 📝 数据编辑（双击单元格修改后，自动保存）") # 表示を更新
+    st.markdown("### 📝 数据编辑（双击单元格修改后，自动保存）") 
     
     # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -439,8 +443,7 @@ else:
         column_config=column_config_dict,
     )
 
-    # 【修正箇所】チェックと自動保存ロジック
-    # 检查是否有编辑变动
+    # 检查是否有编辑变动并自动保存
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
         st.info("检测到数据修改，正在自动保存到 Google 表格...") 
         
