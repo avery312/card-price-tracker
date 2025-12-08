@@ -5,24 +5,19 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
-# 导入 Supabase 客户端库
+# 导入 Supabase 客户端库 (已修正为 'supabase')
 from supabase import create_client, Client 
-# 导入 time 库，但我们不再调用 time.sleep()
 import time 
 
 # === 配置 ===
-# 表格名称现在指向 Supabase 中的表名
 SUPABASE_TABLE_NAME = "cards" 
-# 定义 Supabase/Pandas 字段顺序
 NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
 
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
-# 用于重置侧边栏表单的 Key
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
-# <<< 关键：用于强制刷新主页数据缓存的版本号
 if 'data_version' not in st.session_state:
     st.session_state['data_version'] = 0
 
@@ -32,9 +27,6 @@ def clear_all_data():
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
-    """
-    移除空格和连字符，并转换为大写，用于忽略格式的模糊搜索匹配。
-    """
     if pd.isna(text):
         return ""
     cleaned = str(text).replace('-', '').replace(' ', '')
@@ -62,23 +54,21 @@ def load_data(data_version):
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
-        # 使用 select('*') 从 'cards' 表中获取所有数据
+        # Supabase 默认按 date 降序排列，但最终展示会以 ID 降序为准
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
-        # 将结果转换为 Pandas DataFrame
         df = pd.DataFrame(response.data)
         
         if df.empty:
              return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
-        # 数据清洗和 ID 确保
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         
-        # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
 
-        return df.sort_values(by='date', ascending=False)
+        # 注意：这里不再对 date 排序，以确保 ID 是唯一的排序键
+        return df
     except Exception as e:
         st.error(f"无法从 Supabase 读取数据。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -89,12 +79,10 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
-        # 1. 计算新的 ID
         df = load_data(st.session_state['data_version']) 
         max_id = pd.to_numeric(df['id'], errors='coerce').max()
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
-        # 2. 准备要插入的字典数据
         new_row_data = {
             "id": new_id,
             "date": date.strftime('%Y-%m-%d'),
@@ -108,11 +96,8 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
             "image_url": image_url if image_url else ""
         }
         
-        # 3. 执行插入操作，即时生效
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        # 🚀 已移除 time.sleep()！
-
         st.cache_data.clear()
         st.session_state['data_version'] += 1 
         
@@ -131,21 +116,15 @@ def update_data_and_save(edited_df):
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        # 筛选出需要保存的最终列
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         data_to_save = df_final.to_dict('records')
 
         # 2. 核心操作：删除所有旧数据，然后重新插入所有新数据
-        
-        # A. 删除所有现有数据 
         supabase.table(SUPABASE_TABLE_NAME).delete().neq('id', 0).execute() 
 
-        # B. 插入所有新数据 (包括修改和保留的行，已删除的行不会包含在 data_to_save 中)
         if data_to_save:
             supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
         
-        # 🚀 已移除 time.sleep()！
-
         st.cache_data.clear()
         st.session_state['data_version'] += 1 
         st.success("数据修改已即时保存到 Supabase！")
@@ -353,6 +332,9 @@ else:
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
     # 确保 data_editor 的 date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
+
+    # 🔑 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
+    display_df = display_df.sort_values(by='id', ascending=False)
     
     # --- 📥 数据导出 (用于备份或迁移) ---
     st.divider()
