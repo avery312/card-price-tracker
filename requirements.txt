@@ -1,6 +1,7 @@
-streamlit
+# 您的应用所需的全部依赖
 pandas
 numpy
 requests
 beautifulsoup4
-supabase  # ⚠️ 必须是 'supabase'，而不是 'supabase-py'
+gspread
+gspread-dataframe
