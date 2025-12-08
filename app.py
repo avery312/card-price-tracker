@@ -118,17 +118,13 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
-        time.sleep(1.0) # 修正：等待 Google Sheets 写入完成，提高稳定性
+        time.sleep(1.5) # <<< 修正：等待 Google Sheets 写入完成，增加到 1.5s
 
         st.cache_data.clear()
         st.cache_resource.clear()
         
     except Exception as e:
         st.error(f"追加数据到 Sheets 失败。错误: {e}")
-
-# 删除卡牌函数 (已弃用，删除操作由 update_data_and_save 通过 data_editor 统一处理)
-# def delete_card(card_id):
-#     ...
 
 # 处理数据编辑器的内容并保存到 Google Sheets
 def update_data_and_save(edited_df):
@@ -150,7 +146,7 @@ def update_data_and_save(edited_df):
         # 覆盖工作表 (这包含了 data_editor 中的所有修改和删除操作)
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
-        time.sleep(1.0) # 修正：等待 Google Sheets 写入完成，提高稳定性
+        time.sleep(1.5) # <<< 修正：等待 Google Sheets 写入完成，增加到 1.5s
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -450,7 +446,7 @@ else:
     
     st.divider()
     
-    # --- ❌ 移除手动删除记录区，全部使用 data_editor ---
+    # --- 📊 单卡深度分析面板 ---
     st.markdown("### 📊 单卡深度分析")
     
     analysis_df = filtered_df.copy() 
@@ -516,3 +512,8 @@ else:
 
         with col_chart:
             st.caption("价格走势图")
+            if len(target_df) > 1:
+                # 使用 date_dt (Datetime 对象) 作为 X 轴，确保图表正确绘制时间序列
+                st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
+            else:
+                st.info("需至少两条记录绘制走势")
