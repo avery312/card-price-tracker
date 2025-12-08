@@ -347,19 +347,6 @@ else:
     # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
     display_df = display_df.sort_values(by='id', ascending=False)
     
-    # --- 📥 数据导出 (用于备份或迁移) ---
-    st.divider()
-    st.markdown("### 📥 数据导出 (用于备份或迁移)")
-    if not df.empty:
-        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button(
-            label="下载完整的卡牌数据 (CSV)",
-            data=csv_data,
-            file_name='card_data_full_export.csv',
-            mime='text/csv',
-            help="点击下载 Supabase 中的所有数据，用于备份。"
-        )
-
     st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
     st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）进行多行删除。删除后请点击下方的 **保存** 按钮。")
     
@@ -467,3 +454,16 @@ else:
                 st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
+    
+    # --- 📥 数据导出 (用于备份或迁移) --- (已移动至最底部)
+    st.divider()
+    st.markdown("### 📥 数据导出 (用于备份或迁移)")
+    if not df.empty:
+        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        st.download_button(
+            label="下载完整的卡牌数据 (CSV)",
+            data=csv_data,
+            file_name='card_data_full_export.csv',
+            mime='text/csv',
+            help="点击下载 Supabase 中的所有数据，用于备份。"
+        )
