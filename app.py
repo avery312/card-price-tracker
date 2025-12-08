@@ -381,7 +381,7 @@ else:
 
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
-    # 确保 data_editor 的 date 列为 date 对象
+    # 确保 data_editor の date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
@@ -394,13 +394,13 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 【核心修改】：所有列增加 width 参数，固定列宽
+    # 【核心修正】：重新调整列宽，使其在宽屏模式下总宽度更合理（约1160px），同时保持固定性
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True, width=50), 
         "date": st.column_config.DateColumn("录入时间", width=120), 
         "card_number": st.column_config.Column("编号", width=100),
-        "card_name": st.column_config.Column("卡名", width=250),
-        "card_set": st.column_config.Column("系列", width=150),
+        "card_name": st.column_config.Column("卡名", width=300), # 缩小
+        "card_set": st.column_config.Column("系列", width=150), # 缩小
         "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=100),
         "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=80),
         "rarity": st.column_config.Column("等级", width=80), 
