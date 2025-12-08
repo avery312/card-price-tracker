@@ -24,15 +24,16 @@ if 'submission_successful' not in st.session_state:
     st.session_state['submission_successful'] = False
 if 'submitted_card_name' not in st.session_state: 
     st.session_state['submitted_card_name'] = "" 
-    
-# 【新增/修正】：初始化日期输入框的值，用于保持上次选择的日期
+# 移除了 data_version 变量
+
+# 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
-    # 【新增/修正】：清除操作時，將錄入日期重置為今日
+    # 【新增/修正】：清除操作时，将录入日期重置为今日
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 # === 辅助函数：模糊搜索规范化 ===
@@ -166,49 +167,19 @@ def scrape_card_data(url):
         card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
         temp_title = full_title 
 
-        # --- 【新的抓取逻辑】提取 ≪収録≫ 后面的系列信息 (优先级最高) ---
-        collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
-        
-        is_collection_found = False
-        if collection_tag:
-            collection_text = collection_tag.get_text(strip=True)
-            
-            # 使用更精确的正则表达式：匹配 ≪収録≫ 之后直到 TCG 常见的 【代码】 格式为止
-            # (\w+[\s\w]+?【[A-Z0-9\-\_]+?\】) 捕获例如 'ブースターパック 謀略の王国【OP-04】' 这样的完整系列名
-            set_match = re.search(r'≪収録≫\s*(.*?)(\w+[\s\w]+?【[A-Z0-9\-\_]+?\】)', collection_text, re.DOTALL)
-            
-            if set_match:
-                # set_match.group(2) 捕获到的是最接近 TCG 格式的系列名
-                card_set = set_match.group(2).strip()
-                is_collection_found = True
-            else:
-                # 备用逻辑：如果不存在 【代码】 格式，则非贪婪匹配到下一个大分隔符
-                # 这应该只在没有编码格式时使用，但为了安全保留
-                set_match_fallback = re.search(r'≪収録≫\s*(.+?)(?:\s*。|\s*、|\s*<|$)|\s+(.+?)(?:\s*。|\s*、|\s*<|$)', collection_text, re.DOTALL)
-                if set_match_fallback:
-                    card_set = (set_match_fallback.group(1) or set_match_fallback.group(2)).strip()
-                    is_collection_found = True
-
-            if is_collection_found:
-                # 最终清理，去除可能遗留的引号/括号前缀
-                card_set = re.sub(r'^[\[（「『]', '', card_set).strip()
-                card_set = re.sub(r'[\]）」』]$', '', card_set).strip()
-
-        # -----------------------------------------------------------------
-
-        # 2a. 提取 rarity
+        # 1. 提取 rarity
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
             temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
         
-        # 2b. 提取 color
+        # 2. 提取 color
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
             temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
-        # 2c. 提取 card_number
+        # 3. 提取 card_number
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
         if number_match:
@@ -217,25 +188,18 @@ def scrape_card_data(url):
         else:
             temp_title_without_number = temp_title
         
-        # 3. 提取 card_name 和备用 card_set
-        
-        if not is_collection_found:
-            # 如果 ≪収録≫ 提取失败 (card_set 仍为空), 则使用旧的逻辑从剩余标题中提取 card_name 和 card_set
-            name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
-            if name_part:
-                card_name = name_part.group(1).strip()
-                card_set = temp_title_without_number[len(name_part.group(0)):].strip()
-            else:
-                card_name = temp_title_without_number.strip()
-                card_set = "" # 确保 card_set 在没有匹配时清空
-            
-            card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
+        # 4. 提取 card_set 和 card_name
+        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
+        if name_part:
+            card_name = name_part.group(1).strip()
+            card_set = temp_title_without_number[len(name_part.group(0)):].strip()
         else:
-             # 如果 card_set 已经被 ≪収録≫ 确定，则只从剩余文本中提取 card_name
             card_name = temp_title_without_number.strip()
-
+            card_set = ""
+            
+        card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
         
-        # --- 4. 提取图片链接 ---
+        # --- 5. 提取图片链接 ---
         image_url = None
         
         og_image_tag = soup.find('meta', property='og:image')
@@ -269,13 +233,12 @@ suffix = str(st.session_state['form_key_suffix'])
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
-    
     # 【侧边栏滚动修复】：当提交成功后，在顶部显示瞬时消息，强制滚动到顶部
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
         # 在侧边栏顶部显示一个瞬时的成功消息。
         st.success(f"✅ **{card_name}** 录入成功！", icon="🎉") 
-    
+        
     st.header("🌐 网页自动填充")
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
@@ -323,7 +286,7 @@ with st.sidebar:
         # 【核心修改】：使用 session state 变量作为 value，保留上一次的选择
         date_in = st.date_input(
             "8. 录入日期", 
-            value=st.session_state['last_entry_date'], # 使用 Session State 中保存的值
+            value=st.session_state['last_entry_date'],
             key=f"date_in_form_{suffix}"
         )
 
@@ -345,17 +308,16 @@ with st.sidebar:
     if submitted:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
-                # date_in 是用户在本次提交中选择的值
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
-            # 【核心修改】：提交成功后，将本次用户选择的日期 date_in 存入 session state
+            # 【核心修改】：提出成功后，将本次用户选择的日期 date_in 存入 session state
             st.session_state['last_entry_date'] = date_in
-            
+
             # 清除侧边栏输入状态
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # 设置成功状态和卡牌名
+            # 【关键修改 2】：设置成功状态和卡牌名
             st.session_state['submission_successful'] = True
             st.session_state['submitted_card_name'] = name_in
             
@@ -367,7 +329,7 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 在主页面顶部检查并显示成功消息，迫使页面回到顶部
+# 【关键修改 3】：在主页面顶部检查并显示成功消息，迫使页面回到顶部
 if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
     # 显示成功消息，该消息将成为页面顶部的新元素
