@@ -290,7 +290,11 @@ with st.sidebar:
             # 清除侧边栏输入状态
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
-            st.success(f"已录入: {name_in}")
+            
+            st.success(f"✅ 已成功录入: {name_in}")
+            # **新增/修改**：增加短暂延迟，确保 Streamlit 渲染成功提示，并触发从顶部的脚本重新运行
+            time.sleep(0.5) 
+            
             # 强制重新执行脚本
             st.rerun() 
         else:
