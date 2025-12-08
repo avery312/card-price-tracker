@@ -358,8 +358,7 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
-            # ⬇️ 新增：清除 URL 输入内容
-            st.session_state['scrape_url_input'] = ""
+            st.session_state['scrape_url_input'] = "" # 清除 URL 输入内容
             st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空表单
             
             st.success(f"已录入: {name_in}")
@@ -416,10 +415,12 @@ else:
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
 
     # 准备用于展示和编辑的 DataFrame
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    # ⬇️ 修复：使用 .copy() 避免潜在警告
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore').copy()
 
-    # 强制将 'date' 列从字符串转换为 datetime 对象
-    display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
+    # ⬇️ 核心修复：将 Pandas Datetime 对象转换为 Python Date 对象
+    # 确保与 st.column_config.DateColumn 兼容，解决加载循环问题
+    display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     st.markdown("### 📝 数据编辑（双击单元格修改）") 
     
