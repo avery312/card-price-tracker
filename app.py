@@ -25,16 +25,14 @@ if 'submission_successful' not in st.session_state:
 if 'submitted_card_name' not in st.session_state: 
     st.session_state['submitted_card_name'] = "" 
     
-# 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
+# 【新增/修正】：初始化日期输入框的值，用于保持上次选择的日期
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
-
-# 移除了 data_version 变量
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
-    # 【新增/修正】：清除操作时，将录入日期重置为今日
+    # 【新增/修正】：清除操作時，將錄入日期重置為今日
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 # === 辅助函数：模糊搜索规范化 ===
@@ -322,7 +320,7 @@ with st.sidebar:
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
         
-        # 【关键修改】：使用 session state 变量作为 value，保留上一次的选择
+        # 【核心修改】：使用 session state 变量作为 value，保留上一次的选择
         date_in = st.date_input(
             "8. 录入日期", 
             value=st.session_state['last_entry_date'], # 使用 Session State 中保存的值
@@ -357,7 +355,7 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # 【关键修改 2】：设置成功状态和卡牌名
+            # 设置成功状态和卡牌名
             st.session_state['submission_successful'] = True
             st.session_state['submitted_card_name'] = name_in
             
@@ -369,7 +367,7 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 【关键修改 3】：在主页面顶部检查并显示成功消息，迫使页面回到顶部
+# 在主页面顶部检查并显示成功消息，迫使页面回到顶部
 if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
     # 显示成功消息，该消息将成为页面顶部的新元素
