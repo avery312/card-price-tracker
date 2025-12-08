@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
+# 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
 
@@ -17,7 +18,7 @@ if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
-# <<< 关键：用于强制刷新主页数据缓存的版本号
+# 关键：用于强制刷新主页数据缓存的版本号
 if 'data_version' not in st.session_state:
     st.session_state['data_version'] = 0
 
@@ -54,7 +55,6 @@ def load_data(data_version):
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
-        # Supabase 默认按 date 降序排列，但最终展示会以 ID 降序为准
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
         df = pd.DataFrame(response.data)
@@ -78,10 +78,18 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
-        df = load_data(st.session_state['data_version']) 
-        max_id = pd.to_numeric(df['id'], errors='coerce').max()
+        # 🔑 1. 优化：直接查询 Supabase 获取最大的 ID，避免使用 load_data 的缓存
+        # 确保我们获取的是最新的 ID，用于新行的自增 ID
+        response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
+        
+        max_id = 0
+        if response.data and response.data[0] and 'id' in response.data[0]:
+            # 找到当前最大的 ID
+            max_id = response.data[0]['id']
+            
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
+        # 2. 准备要插入的字典数据
         new_row_data = {
             "id": new_id,
             "date": date.strftime('%Y-%m-%d'),
@@ -95,10 +103,10 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
             "image_url": image_url if image_url else ""
         }
         
+        # 3. 执行插入操作
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        # 🔑 仅依赖 data_version 改变来打破 st.cache_data 缓存
-        # st.cache_data.clear() # <--- 移除不必要的全局清除
+        # 4. 增加 data_version 强制主页缓存刷新
         st.session_state['data_version'] += 1 
         
     except Exception as e:
@@ -125,8 +133,7 @@ def update_data_and_save(edited_df):
         if data_to_save:
             supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
         
-        # 🔑 仅依赖 data_version 改变来打破 st.cache_data 缓存
-        # st.cache_data.clear() # <--- 移除不必要的全局清除
+        # 增加 data_version 强制刷新
         st.session_state['data_version'] += 1 
         st.success("数据修改已即时保存到 Supabase！")
     except Exception as e:
@@ -283,7 +290,7 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             st.success(f"已录入: {name_in}")
-            st.rerun() # <-- 强制重新执行脚本
+            st.rerun() 
         else:
             st.error("卡牌名称不能为空！")
 
