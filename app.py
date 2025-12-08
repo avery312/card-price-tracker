@@ -18,9 +18,7 @@ if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
-# 关键：用于强制刷新主页数据缓存的版本号
-if 'data_version' not in st.session_state:
-    st.session_state['data_version'] = 0
+# 移除 data_version 变量，不再使用其控制缓存
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
@@ -37,7 +35,7 @@ def normalize_text_for_fuzzy_search(text):
 
 @st.cache_resource(ttl=None)
 def connect_supabase() -> Client:
-    """使用 Streamlit Secrets 连接到 Supabase 数据库"""
+    """使用 Streamlit Secrets 凭证连接到 Supabase 数据库 (连接对象缓存)"""
     try:
         url: str = st.secrets["supabase"]["URL"]
         key: str = st.secrets["supabase"]["KEY"]
@@ -47,14 +45,15 @@ def connect_supabase() -> Client:
         st.error(f"无法连接 Supabase 数据库。请检查 secrets.toml 配置。错误: {e}")
         return None
 
-@st.cache_data(ttl=3600)
-def load_data(data_version):
-    """从 Supabase 读取所有数据，使用 data_version 强制刷新缓存"""
+# 🔑 关键修复：移除 @st.cache_data 装饰器！
+def load_data():
+    """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
     if not supabase:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
+        # 直接读取数据，无需 data_version 参数
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
         df = pd.DataFrame(response.data)
@@ -78,8 +77,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
-        # 🔑 1. 优化：直接查询 Supabase 获取最大的 ID，避免使用 load_data 的缓存
-        # 确保我们获取的是最新的 ID，用于新行的自增 ID
+        # 1. 直接查询 Supabase 获取最大的 ID (最可靠的 ID 生成方式)
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
         
         max_id = 0
@@ -106,8 +104,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         # 3. 执行插入操作
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        # 4. 增加 data_version 强制主页缓存刷新
-        st.session_state['data_version'] += 1 
+        # 🔑 移除 data_version 递增
         
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
@@ -133,8 +130,6 @@ def update_data_and_save(edited_df):
         if data_to_save:
             supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
         
-        # 增加 data_version 强制刷新
-        st.session_state['data_version'] += 1 
         st.success("数据修改已即时保存到 Supabase！")
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
@@ -285,11 +280,14 @@ with st.sidebar:
     if st.button("提交录入", type="primary", key=f"submit_btn_{suffix}"):
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
+                # 提交数据
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
+            # 清除侧边栏输入状态
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             st.success(f"已录入: {name_in}")
+            # 强制重新执行脚本
             st.rerun() 
         else:
             st.error("卡牌名称不能为空！")
@@ -297,13 +295,13 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 传递 data_version 变量，确保每次 data_version 改变时，load_data 都被强制执行
-df = load_data(st.session_state['data_version']) 
+# 🔑 关键：直接调用 load_data()，每次 rerum 都会执行数据库读取
+df = load_data() 
 
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
-    # 预处理
+    # 预处理 (与之前代码保持一致)
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -397,6 +395,7 @@ else:
         if st.button("💾 确认并保存所有修改", type="primary"):
             with st.spinner("🚀 数据即时保存中..."):
                 update_data_and_save(final_df_to_save)
+            # 强制重新执行脚本
             st.rerun()
 
     
