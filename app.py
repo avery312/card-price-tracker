@@ -139,7 +139,7 @@ def update_data_and_save(edited_df):
         st.error(f"保存修改失败。错误: {e}")
 
 
-# 网页抓取函数 (包含 ≪収録≫ 逻辑)
+# 网页抓取函数 (已更新，增加 ≪収録≫ 逻辑优化)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -163,16 +163,32 @@ def scrape_card_data(url):
         temp_title = full_title 
 
         # --- 【新的抓取逻辑】提取 ≪収録≫ 后面的系列信息 (优先级最高) ---
-        # 查找包含 '≪収録≫' 的任何标签的文本内容
         collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
+        
+        is_collection_found = False
         if collection_tag:
             collection_text = collection_tag.get_text(strip=True)
-            # 匹配 ≪収録≫ 后的所有内容
-            set_match = re.search(r'≪収録≫(.+)', collection_text)
+            
+            # 使用更精确的正则表达式：匹配 ≪収録≫ 之后直到 TCG 常见的 【代码】 格式为止
+            # 捕获组 (2) 匹配例如 'ブースターパック 謀略の王国【OP-04】' 这样的完整系列名
+            set_match = re.search(r'≪収録≫\s*(.*?)(\w+[\s\w]+?【[A-Z0-9\-\_]+?\】)', collection_text, re.DOTALL)
+            
             if set_match:
-                card_set = set_match.group(1).strip()
-                # 清理系列名中可能存在的方括号等
-                card_set = re.sub(r'[【】\[\]『』]', '', card_set).strip()
+                # set_match.group(2) 捕获到的是最接近 TCG 格式的系列名
+                card_set = set_match.group(2).strip()
+                is_collection_found = True
+            else:
+                # 备用逻辑：如果不存在 【代码】 格式，则非贪婪匹配到下一个大分隔符
+                set_match_fallback = re.search(r'≪収録≫\s*(.+?)(?:\s*。|\s*、|\s*<|$)|\s+(.+?)(?:\s*。|\s*、|\s*<|$)', collection_text, re.DOTALL)
+                if set_match_fallback:
+                    card_set = (set_match_fallback.group(1) or set_match_fallback.group(2)).strip()
+                    is_collection_found = True
+
+            if is_collection_found:
+                # 最终清理，去除可能遗留的引号/括号前缀
+                card_set = re.sub(r'^[\[（「『]', '', card_set).strip()
+                card_set = re.sub(r'[\]）」』]$', '', card_set).strip()
+
         # -----------------------------------------------------------------
         
         # --- 2. 提取 rarity, color, card_number (这些信息不受 card_set 提取方式影响) ---
@@ -200,7 +216,7 @@ def scrape_card_data(url):
         
         # --- 3. 提取 card_name 和备用 card_set ---
         
-        if not card_set:
+        if not is_collection_found:
             # 如果 ≪収録≫ 提取失败 (card_set 仍为空), 则使用旧的逻辑从剩余标题中提取 card_name 和 card_set
             name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
             if name_part:
@@ -250,13 +266,11 @@ suffix = str(st.session_state['form_key_suffix'])
 # --- 侧边栏：录入 ---
 with st.sidebar:
     
-    # --- 新增侧边栏滚动修复逻辑 ---
+    # 【侧边栏滚动修复】：当提交成功后，在顶部显示瞬时消息，强制滚动到顶部
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
         # 在侧边栏顶部显示一个瞬时的成功消息。
-        # 此新元素将尝试强制 Streamlit 重新计算并滚动侧边栏到顶部。
-        st.success(f"✅ **{card_name}** 录入成功！") 
-    # ---------------------------------
+        st.success(f"✅ **{card_name}** 录入成功！", icon="🎉") 
     
     st.header("🌐 网页自动填充")
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
@@ -345,7 +359,7 @@ if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
     # 显示成功消息，该消息将成为页面顶部的新元素
     st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
-    # 清除状态，防止在后续操作中反复显示，注意：清除动作必须在这里执行
+    # 清除状态，防止在后续操作中反复显示
     st.session_state['submission_successful'] = False
     st.session_state['submitted_card_name'] = ""
 
