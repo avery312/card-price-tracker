@@ -19,21 +19,24 @@ if 'scrape_result' not in st.session_state:
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
 
-# 【关键修改 1】：新增/初始化用于控制滚动和消息的状态
+# 新增/初始化用于控制滚动和消息的状态
 if 'submission_successful' not in st.session_state: 
     st.session_state['submission_successful'] = False
 if 'submitted_card_name' not in st.session_state: 
     st.session_state['submitted_card_name'] = "" 
-# 移除了 data_version 变量
 
-# 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
+# 初始化日期输入框的值，用于保持上次选择的日期
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
+
+# 初始化存储唯一卡牌定义的 DataFrame
+if 'unique_cards' not in st.session_state:
+    st.session_state['unique_cards'] = pd.DataFrame(columns=['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url', 'display_label'])
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
-    # 【新增/修正】：清除操作时，将录入日期重置为今日
+    # 清除操作时，将录入日期重置为今日
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 # === 辅助函数：模糊搜索规范化 ===
@@ -42,6 +45,13 @@ def normalize_text_for_fuzzy_search(text):
         return ""
     cleaned = str(text).replace('-', '').replace(' ', '')
     return cleaned.upper()
+
+# 辅助函数：检查卡牌是否存在 (基于 card_number)
+def check_card_exists(card_number, unique_cards_df):
+    """Check if a card number already exists and return its latest details."""
+    if card_number and card_number in unique_cards_df['card_number'].values:
+        return unique_cards_df[unique_cards_df['card_number'] == card_number].iloc[0].to_dict()
+    return None
 
 # === Supabase 数据库函数 ===
 
@@ -57,7 +67,6 @@ def connect_supabase() -> Client:
         st.error(f"无法连接 Supabase 数据库。请检查 secrets.toml 配置。错误: {e}")
         return None
 
-# 🔑 关键修复：load_data 不再使用 @st.cache_data
 def load_data():
     """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
@@ -65,7 +74,6 @@ def load_data():
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
-        # 直接读取数据
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
         df = pd.DataFrame(response.data)
@@ -75,26 +83,24 @@ def load_data():
 
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
-        
-        df = df[NEW_EXPECTED_COLUMNS] 
+        df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df[NEW_EXPECTED_COLUMNS + ['date_dt']] 
 
         return df
     except Exception as e:
         st.error(f"无法从 Supabase 读取数据。错误: {e}")
-        return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
+        return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS + ['date_dt'])
 
-# 新增/追加卡牌
+# 新增/追加卡牌 (用于添加新的历史记录或建立初始卡牌定义)
 def add_card(name, number, card_set, price, quantity, rarity, color, date, image_url=None):
     supabase = connect_supabase()
     if not supabase: return
     
     try:
-        # 1. 直接查询 Supabase 获取最大的 ID 
+        # 1. 查询最大 ID
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
-        
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
-            # 找到当前最大的 ID
             max_id = response.data[0]['id']
             
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
@@ -131,6 +137,7 @@ def update_data_and_save(edited_df):
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
+        # 确保只保留必要的列
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         data_to_save = df_final.to_dict('records')
 
@@ -231,14 +238,41 @@ st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout=
 
 suffix = str(st.session_state['form_key_suffix']) 
 
+# 🔑 load_data() 每次 rerun 都会执行数据库读取
+df = load_data() 
+
+# --- NEW: Get unique card definitions for lookups and selection ---
+if not df.empty:
+    # 预处理数据
+    df['image_url'] = df['image_url'].fillna('')
+    df['rarity'] = df['rarity'].fillna('') 
+    df['color'] = df['color'].fillna('') 
+    df['card_set'] = df['card_set'].fillna('') 
+    df['card_number'] = df['card_number'].fillna('') 
+    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
+    df = df.dropna(subset=['date_dt']) 
+
+    # 排序以获取最新的名称/集合/图片 URL 作为卡牌定义
+    unique_cards_df = df.sort_values('date_dt', ascending=False).drop_duplicates(subset=['card_number'], keep='first')
+    unique_cards_df['display_label'] = unique_cards_df.apply(
+        lambda x: f"[{x['card_number']}] {x['card_name']} ({x['card_set']})", axis=1
+    )
+    # 存储唯一的卡牌信息
+    st.session_state['unique_cards'] = unique_cards_df[['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url', 'display_label']]
+    card_options = {label: num for label, num in zip(st.session_state['unique_cards']['display_label'], st.session_state['unique_cards']['card_number'])}
+else:
+    st.session_state['unique_cards'] = pd.DataFrame(columns=['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url', 'display_label'])
+    card_options = {}
+
+
 # --- 侧边栏：录入 ---
 with st.sidebar:
-    # 【侧边栏滚动修复】：当提交成功后，在顶部显示瞬时消息，强制滚动到顶部
+    
+    # 提交成功消息
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
-        # 在侧边栏顶部显示一个瞬时的成功消息。
         st.success(f"✅ **{card_name}** 录入成功！", icon="🎉") 
-        
+    
     st.header("🌐 网页自动填充")
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
@@ -260,101 +294,192 @@ with st.sidebar:
             st.rerun() 
 
     st.divider()
-    st.header("📝 手动录入/修正")
+    st.header("📝 录入新卡/更新价格")
     
-    res = st.session_state['scrape_result']
+    # --- STEP 1: Card Identification (by Number or Selection) ---
+    
+    # 卡牌选择框 (基于已有的唯一卡牌定义)
+    selected_label = st.selectbox(
+        "选择已有的卡牌进行价格更新：",
+        options=[''] + list(card_options.keys()),
+        index=0,
+        key=f"card_select_{suffix}"
+    )
+    
+    res = st.session_state.get('scrape_result', {})
+    
+    # 根据选择或抓取结果确定卡牌编号和默认值
+    card_number_in_potential = ""
     name_default = res.get('card_name', "")
-    number_default = res.get('card_number', "")
     set_default = res.get('card_set', "")
     rarity_default = res.get('card_rarity', "") 
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
-
     
-    # 🔑 关键修复：使用 st.form 包裹手动输入和提交按钮
-    # 使用唯一的 key 确保表单不会因 session state 变化而混淆
-    with st.form(key=f"manual_entry_form_{suffix}"):
-        card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_form_{suffix}")
-        name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_form_{suffix}")
-        set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_form_{suffix}") 
-        rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_form_{suffix}") 
-        color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
+    if selected_label and selected_label != '':
+        # 1. 选择了现有卡牌
+        card_number_in_potential = card_options[selected_label]
+        selected_card_info = st.session_state['unique_cards'][st.session_state['unique_cards']['card_number'] == card_number_in_potential].iloc[0]
+        name_default = selected_card_info['card_name']
+        set_default = selected_card_info['card_set']
+        rarity_default = selected_card_info['rarity']
+        color_default = selected_card_info['color']
+        img_url_default = selected_card_info['image_url']
+    elif res.get('card_number'):
+        # 2. 从抓取结果中获取编号
+        card_number_in_potential = res.get('card_number')
         
-        price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
-        quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
-        
-        # 【核心修改】：使用 session state 变量作为 value，保留上一次的选择
-        date_in = st.date_input(
-            "8. 录入日期", 
-            value=st.session_state['last_entry_date'],
-            key=f"date_in_form_{suffix}"
-        )
+    # 手动输入/修正卡牌编号
+    card_number_in = st.text_input(
+        "或手动输入/修正卡牌编号:", 
+        value=card_number_in_potential, 
+        key=f"card_number_in_manual_{suffix}"
+    )
 
-        st.divider()
-        st.write("🖼️ 卡牌图片 (可修正)")
-
-        image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_form_{suffix}")
-        final_image_path = image_url_input if image_url_input else None
-        
-        if final_image_path:
-            try:
-                st.image(final_image_path, caption="预览", use_container_width=True)
-            except: 
-                st.warning("无法加载该链接的图片。")
-
-        # 使用 st.form_submit_button 替换 st.button
-        submitted = st.form_submit_button("提交录入", type="primary")
-
-    if submitted:
-        if name_in:
-            with st.spinner("🚀 数据即时保存中..."):
-                add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
+    # 检查卡牌编号是否存在
+    existing_card_data = check_card_exists(card_number_in, st.session_state['unique_cards'])
+    is_existing_card = existing_card_data is not None
+    
+    if card_number_in:
+        if is_existing_card:
+            st.info(f"✅ 卡牌编号 **{card_number_in}** 已存在。当前模式：**【更新价格历史】**")
             
-            # 【核心修改】：提出成功后，将本次用户选择的日期 date_in 存入 session state
-            st.session_state['last_entry_date'] = date_in
+            # 覆盖默认值以确保与现有卡牌信息一致
+            name_default = existing_card_data.get('card_name', name_default)
+            set_default = existing_card_data.get('card_set', set_default)
+            rarity_default = existing_card_data.get('rarity', rarity_default)
+            color_default = existing_card_data.get('color', color_default)
+            img_url_default = existing_card_data.get('image_url', img_url_default)
+            
+            # --- Price Update Mode Form ---
+            with st.form(key=f"price_update_form_{suffix}"):
+                st.subheader("💰 提交新的价格记录")
+                
+                # 显示固定信息
+                st.markdown(f"**卡牌名称:** `{name_default}`")
+                st.markdown(f"**系列/版本:** `{set_default}`")
+                st.markdown(f"**等级/颜色:** `{rarity_default}` / `{color_default}`")
+                
+                st.divider()
+                
+                price_in = st.number_input("价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
+                quantity_in = st.number_input("数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
+                
+                # 保留上一次选择的日期
+                date_in = st.date_input(
+                    "录入日期", 
+                    value=st.session_state['last_entry_date'],
+                    key=f"date_in_form_{suffix}"
+                )
+                
+                submitted = st.form_submit_button("提交价格更新", type="primary")
 
-            # 清除侧边栏输入状态
-            st.session_state['scrape_result'] = {}
-            st.session_state['form_key_suffix'] += 1
-            
-            # 【关键修改 2】：设置成功状态和卡牌名
-            st.session_state['submission_successful'] = True
-            st.session_state['submitted_card_name'] = name_in
-            
-            # 强制重新执行脚本
-            st.rerun() 
+                if submitted:
+                    if price_in > 0 and quantity_in > 0:
+                        with st.spinner("🚀 数据即时保存中..."):
+                            # 使用固定细节进行历史记录添加
+                            add_card(
+                                name=name_default, 
+                                number=card_number_in, 
+                                card_set=set_default, 
+                                price=price_in, 
+                                quantity=quantity_in, 
+                                rarity=rarity_default, 
+                                color=color_default, 
+                                date=date_in, 
+                                image_url=img_url_default
+                            )
+                        
+                        st.session_state['last_entry_date'] = date_in
+                        st.session_state['scrape_result'] = {}
+                        st.session_state['form_key_suffix'] += 1
+                        st.session_state['submission_successful'] = True
+                        st.session_state['submitted_card_name'] = name_default
+                        st.rerun() 
+                    else:
+                        st.error("价格和数量必须大于 0！")
+
         else:
-            st.error("卡牌名称不能为空！")
+            # 编号不存在，进入新增卡牌模式
+            st.warning(f"⚠️ 卡牌编号 **{card_number_in}** 未找到。当前模式：**【新增卡牌定义】**")
+            
+            # --- New Card Entry Mode Form ---
+            with st.form(key=f"new_card_entry_form_{suffix}"):
+                st.subheader("🆕 填写新卡牌信息 (初始记录)")
+                
+                name_in = st.text_input("卡牌名称 (必填)", value=name_default, key=f"name_in_form_{suffix}")
+                set_in = st.text_input("系列/版本", value=set_default, key=f"set_in_form_{suffix}") 
+                rarity_in = st.text_input("等级 (Rarity)", value=rarity_default, key=f"rarity_in_form_{suffix}") 
+                color_in = st.text_input("颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
+                
+                price_in = st.number_input("价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_initial_form_{suffix}")
+                quantity_in = st.number_input("数量 (张)", min_value=1, step=1, key=f"quantity_in_initial_form_{suffix}")
+                
+                # 保留上一次选择的日期
+                date_in = st.date_input(
+                    "录入日期", 
+                    value=st.session_state['last_entry_date'],
+                    key=f"date_in_initial_form_{suffix}"
+                )
+
+                st.divider()
+                st.write("🖼️ 卡牌图片 (可修正)")
+                image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_form_{suffix}")
+                final_image_path = image_url_input if image_url_input else None
+                
+                if final_image_path:
+                    try:
+                        st.image(final_image_path, caption="预览", use_container_width=True)
+                    except: 
+                        st.warning("无法加载该链接的图片。")
+
+                submitted = st.form_submit_button("提交新卡牌及初始记录", type="primary")
+
+                if submitted:
+                    if name_in and card_number_in and price_in > 0 and quantity_in > 0:
+                        with st.spinner("🚀 数据即时保存中..."):
+                            add_card(
+                                name=name_in, 
+                                number=card_number_in, 
+                                card_set=set_in, 
+                                price=price_in, 
+                                quantity=quantity_in, 
+                                rarity=rarity_in, 
+                                color=color_in, 
+                                date=date_in, 
+                                image_url=final_image_path
+                            )
+                        
+                        st.session_state['last_entry_date'] = date_in
+                        st.session_state['scrape_result'] = {}
+                        st.session_state['form_key_suffix'] += 1
+                        st.session_state['submission_successful'] = True
+                        st.session_state['submitted_card_name'] = name_in
+                        st.rerun() 
+                    else:
+                        st.error("卡牌名称、编号、价格和数量不能为空！")
+    else:
+        st.info("请先输入或选择卡牌编号以开始录入。")
+        # 如果有抓取结果但没有编号，显示图片预览
+        if img_url_default:
+            try:
+                st.image(img_url_default, caption="抓取图片预览", use_container_width=True)
+            except: 
+                pass
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 【关键修改 3】：在主页面顶部检查并显示成功消息，迫使页面回到顶部
+# 主页面顶部的成功消息
 if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
-    # 显示成功消息，该消息将成为页面顶部的新元素
     st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
-    # 清除状态，防止在后续操作中反复显示
     st.session_state['submission_successful'] = False
     st.session_state['submitted_card_name'] = ""
-
-
-# 🔑 load_data() 每次 rerun 都会执行数据库读取
-df = load_data() 
 
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
-    # 预处理 (与之前代码保持一致)
-    df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
-    df['image_url'] = df['image_url'].fillna('')
-    df['rarity'] = df['rarity'].fillna('') 
-    df['color'] = df['color'].fillna('') 
-    df['card_set'] = df['card_set'].fillna('') 
-    df['card_number'] = df['card_number'].fillna('') 
-    df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
-    df = df.dropna(subset=['date_dt']) 
-    
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3 = st.columns(3) 
@@ -381,17 +506,13 @@ else:
 
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
-    # 确保 data_editor 的 date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
-
-    # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
     display_df = display_df.sort_values(by='id', ascending=False)
     
     st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
     st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）进行多行删除。删除后请点击下方的 **保存** 按钮。")
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
-    
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
     column_config_dict = {
@@ -417,16 +538,13 @@ else:
         num_rows="dynamic",
     )
 
-    # 检查是否有编辑变动或删除操作
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
         st.warning("⚠️ 数据修改或删除操作已检测到。请点击 **保存修改** 按钮！")
-        
         final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
             with st.spinner("🚀 数据即时保存中..."):
                 update_data_and_save(final_df_to_save)
-            # 强制重新执行脚本
             st.rerun()
 
     
@@ -435,20 +553,25 @@ else:
     # --- 📊 单卡深度分析面板 ---
     st.markdown("### 📊 单卡深度分析")
     
-    analysis_df = filtered_df.copy() 
+    analysis_options = st.session_state['unique_cards']['display_label'].unique()
 
-    if analysis_df.empty:
-        st.warning("无筛选结果。")
+    if len(analysis_options) == 0:
+        st.info("无卡牌可供分析。")
     else:
-        analysis_df['unique_label'] = analysis_df.apply(
-            lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
-            axis=1
+        # 使用唯一卡牌标签进行选择
+        selected_variant_label = st.selectbox(
+            "请选择要分析的具体卡牌:", 
+            analysis_options,
+            key='analysis_select'
         )
         
-        unique_variants = analysis_df['unique_label'].unique()
-        selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
+        # 获取选中卡牌的编号
+        selected_card_number = st.session_state['unique_cards'][
+            st.session_state['unique_cards']['display_label'] == selected_variant_label
+        ]['card_number'].iloc[0]
         
-        target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
+        # 筛选出该卡牌的所有历史记录
+        target_df = df[df['card_number'] == selected_card_number].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
         
@@ -465,14 +588,27 @@ else:
                 st.caption("暂无图片")
 
         with col_stat:
-            st.caption("价格统计")
+            st.caption("价格统计与历史记录")
             if not target_df.empty:
+                # 历史记录表格
+                st.markdown("##### 历史记录 (时间/价格/数量)")
+                history_display = target_df[['date', 'price', 'quantity']].copy()
+                history_display['date'] = history_display['date'].astype(str)
+                st.dataframe(
+                    history_display.sort_values('date', ascending=False),
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d"),
+                        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d"),
+                    }
+                )
+
+                # 统计数据
                 curr_price = target_df.iloc[-1]['price']
                 total_quantity = target_df['quantity'].sum()
-                
                 max_price = target_df['price'].max()
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
-                
                 min_price = target_df['price'].min()
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
 
@@ -487,7 +623,6 @@ else:
             else:
                 st.info("无数据统计。")
 
-
         with col_chart:
             st.caption("价格走势图")
             if len(target_df) > 1:
@@ -499,7 +634,7 @@ else:
     st.divider()
     st.markdown("### 📥 数据导出 (用于备份或迁移)")
     if not df.empty:
-        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        csv_data = df[NEW_EXPECTED_COLUMNS].to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
             label="下载完整的卡牌数据 (CSV)",
             data=csv_data,
