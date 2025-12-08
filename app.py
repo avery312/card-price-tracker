@@ -394,18 +394,18 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 【核心修正】：重新调整列宽，使其在宽屏模式下总宽度更合理（约1160px），同时保持固定性
+    # 【核心修正】：再缩小1/3，总宽度约为770px
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True, width=50), 
-        "date": st.column_config.DateColumn("录入时间", width=120), 
-        "card_number": st.column_config.Column("编号", width=100),
-        "card_name": st.column_config.Column("卡名", width=300), # 缩小
-        "card_set": st.column_config.Column("系列", width=150), # 缩小
-        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=100),
-        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=80),
-        "rarity": st.column_config.Column("等级", width=80), 
-        "color": st.column_config.Column("颜色", width=80), 
-        "image_url": st.column_config.ImageColumn("卡图", width=100),
+        "date": st.column_config.DateColumn("录入时间", width=80), 
+        "card_number": st.column_config.Column("编号", width=70),
+        "card_name": st.column_config.Column("卡名", width=200), # 缩小到 200
+        "card_set": st.column_config.Column("系列", width=100), # 缩小到 100
+        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
+        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
+        "rarity": st.column_config.Column("等级", width=50), 
+        "color": st.column_config.Column("颜色", width=50), 
+        "image_url": st.column_config.ImageColumn("卡图", width=50),
     }
     
     edited_df = st.data_editor(
