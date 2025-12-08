@@ -7,7 +7,7 @@ import re
 import gspread 
 import gspread_dataframe as gd
 import numpy as np 
-import time # 用于在写入 Google Sheets 后等待，确保操作完成
+import time # <<< 新增/恢复：用于在写入 Google Sheets 后强制等待
 
 # === 配置 ===
 SHEET_NAME = "数据表" 
@@ -17,23 +17,14 @@ NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'p
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
+# 由于没有动态 key，我们使用一个简单的 session state 标记来尝试重置表单
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
-# 标记：指示数据是否已更新，用于强制缓存刷新
-if 'data_is_fresh' not in st.session_state:
-    st.session_state['data_is_fresh'] = False
-# 存储待删除的行ID列表
-if 'rows_to_delete' not in st.session_state:
-    st.session_state['rows_to_delete'] = set()
-# 存储当前 DataFrame，用于即时更新
-if 'current_df' not in st.session_state:
-    st.session_state['current_df'] = pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
-    
+
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
+    # 尝试更新 suffix 来刷新表单
     st.session_state['form_key_suffix'] += 1 
-    st.session_state['data_is_fresh'] = False
-    st.session_state['rows_to_delete'] = set() # 清除待删除列表
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -42,6 +33,7 @@ def normalize_text_for_fuzzy_search(text):
     """
     if pd.isna(text):
         return ""
+    # 移除连字符 '-' 和空格 ' '
     cleaned = str(text).replace('-', '').replace(' ', '')
     return cleaned.upper()
 
@@ -51,7 +43,6 @@ def normalize_text_for_fuzzy_search(text):
 def connect_gspread():
     """使用 Streamlit Secrets 凭证连接到 Google Sheets API"""
     try:
-        # ... (连接逻辑保持不变)
         creds = {
             "type": st.secrets["gsheets"]["type"],
             "project_id": st.secrets["gsheets"]["project_id"],
@@ -69,6 +60,7 @@ def connect_gspread():
         gc = gspread.service_account_from_dict(creds)
         spreadsheet_url = st.secrets["gsheets"]["spreadsheet_url"]
         
+        # 兼容性处理：去除 URL 中的 gid 参数
         base_url = spreadsheet_url.split('/edit')[0] 
         sh = gc.open_by_url(base_url)
         
@@ -77,14 +69,9 @@ def connect_gspread():
         st.error(f"无法连接 Google Sheets API。请检查 Secrets 格式、权限及 URL。错误: {e}")
         return None
 
-# load_data 函数接受 'force_refresh' 作为参数，强制缓存更新
 @st.cache_data(ttl=3600)
-def load_data(force_refresh):
-    """从 Google Sheets 读取所有数据"""
-    if force_refresh is False:
-        # 如果 force_refresh 为 False (默认状态)，则使用缓存
-        pass 
-    
+def load_data(suffix):
+    """从 Google Sheets 读取所有数据，使用 suffix 强制刷新缓存"""
     sh = connect_gspread()
     if not sh:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -98,17 +85,15 @@ def load_data(force_refresh):
             return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
         # 数据清洗和 ID 确保
-        df = df.replace({np.nan: None}) 
+        df = df.replace({np.nan: None}) # 将 NaN 替换为 None，便于后续处理
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         if df['id'].duplicated().any() or (df['id'] == 0).any():
              df['id'] = range(1, len(df) + 1)
         
+        # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
-        df = df.sort_values(by='date', ascending=False)
-        
-        # 缓存数据并将其存储到 session_state
-        st.session_state['current_df'] = df.copy() 
-        return df
+
+        return df.sort_values(by='date', ascending=False)
     except Exception as e:
         st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -120,15 +105,16 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     
     try:
         worksheet = sh.worksheet(SHEET_NAME)
-        # 从 session_state 中获取当前数据来确定新 ID
-        df_current = st.session_state['current_df']
+        # load_data 函数现在需要一个参数
+        df = load_data(st.session_state['form_key_suffix']) 
         
         try:
-            max_id = pd.to_numeric(df_current['id'], errors='coerce').max()
+            max_id = pd.to_numeric(df['id'], errors='coerce').max()
             new_id = int(max_id + 1) if pd.notna(max_id) else 1
         except:
             new_id = 1
         
+        # 准备要追加的行数据 (必须与 NEW_EXPECTED_COLUMNS 顺序一致)
         new_row = [
             new_id, 
             date.strftime('%Y-%m-%d'),
@@ -144,56 +130,47 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
-        time.sleep(5.0) # 保持 5 秒等待，但在后台执行
-        
+        time.sleep(5.0) # <<< 关键修复：确保 Google Sheets 写入完成
+
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.session_state['data_is_fresh'] = True # 强制下次 load_data 时重新读取
         
     except Exception as e:
         st.error(f"追加数据到 Sheets 失败。错误: {e}")
 
-# 处理数据编辑器的内容和待删除行，并保存到 Google Sheets
-def update_data_and_save(edited_df, rows_to_delete):
+# 处理数据编辑器的内容并保存到 Google Sheets
+def update_data_and_save(edited_df):
     sh = connect_gspread()
     if not sh: return
     
     try:
         worksheet = sh.worksheet(SHEET_NAME)
         
-        # 1. 应用编辑 (edited_df)
+        # 数据类型清理和格式化
+        # 确保 date 列处理为字符串，以便 gspread_dataframe 正确写入
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        df_to_save = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
+        # 确保列顺序并处理缺失值
+        # edited_df 已经排除了被删除的行
+        df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         
-        # 2. 从 df_to_save 中移除待删除行 (双重检查)
-        if rows_to_delete:
-            df_final = df_to_save[~df_to_save['id'].isin(rows_to_delete)]
-        else:
-            df_final = df_to_save
-
         # 覆盖工作表
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
-        time.sleep(5.0) # 保持 5 秒等待，保证写入成功
-        
-        # 清理状态
+        time.sleep(5.0) # <<< 关键修复：确保 Google Sheets 写入完成
+
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.session_state['data_is_fresh'] = True # 强制下次 load_data 时重新读取
-        st.session_state['rows_to_delete'] = set() # 清空待删除列表
         st.success("数据修改已自动保存到 Google 表格！")
-        return True
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
-        return False
 
-# ... (scrape_card_data 函数保持不变)
+
+# 网页抓取函数 
 def scrape_card_data(url):
-    # ... (保持不变)
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
         return {"error": "网址格式不正确。"}
@@ -212,62 +189,53 @@ def scrape_card_data(url):
         if not full_title:
              return {"error": "未能找到卡牌名称标题。"}
 
-        card_name = ""; rarity = ""; color = ""; card_number = ""; card_set = "" 
-        temp_title = full_title # 初始化临时标题
+        card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
+        temp_title = full_title 
 
-        # 1. 提取 rarity (例如：【R】)
+        # 1. 提取 rarity
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
-            temp_title = temp_title.replace(rarity_match.group(0), '').strip()
+            temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
         
-        # 2. 提取 color (例如：《红》)
+        # 2. 提取 color
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
-            temp_title = temp_title.replace(color_match.group(0), '').strip()
+            temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
-        # 3. 提取 card_number (例如：P-028 或 EB03-061)
+        # 3. 提取 card_number
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
         if number_match:
             card_number = number_match.group(1).strip()
-            temp_title = temp_title.replace(number_match.group(0), '').strip()
+            temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
+        else:
+            temp_title_without_number = temp_title
         
         # 4. 提取 card_set 和 card_name
-        cleaned_title = temp_title.strip()
-        
-        # 尝试提取各种括号内的系列/版本信息 (支持全角/半角)
-        # 匹配 [内容] 或 (内容) 或 『内容』
-        card_set_match = re.search(r'[\(\[（『](.+?)[\)\]）』]', cleaned_title)
-        
-        if card_set_match:
-            # 提取括号内的内容作为系列名
-            card_set = card_set_match.group(1).strip()
-            # 从标题中移除括号及内容，剩下的就是卡名
-            card_name = cleaned_title.replace(card_set_match.group(0), '').strip()
+        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
+        if name_part:
+            card_name = name_part.group(1).strip()
+            card_set = temp_title_without_number[len(name_part.group(0)):].strip()
         else:
-            # 如果没有明显的括号包裹的系列信息，整个剩余的字符串就是卡名
-            card_name = cleaned_title
+            card_name = temp_title_without_number.strip()
             card_set = ""
             
-        # 确保卡名不为空
-        if not card_name:
-             card_name = cleaned_title 
-
+        card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
+        
         # --- 5. 提取图片链接 ---
         image_url = None
         
-        # 优先级 1: 尝试通过 og:image meta 标签获取 (适用于 Mercari 等网站)
+        # 优先级 1: 尝试通过 og:image meta 标签获取
         og_image_tag = soup.find('meta', property='og:image')
         if og_image_tag:
             image_url = og_image_tag.get('content')
             
         # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索
         if not image_url:
-            # 使用更宽泛的搜索
-            image_tag = soup.find('img', {'alt': lambda x: x and ('メイン画像' in x or 'カード' in x)}) or \
-                        soup.find('img', {'src': lambda x: x and ('card_image' in x or 'images' in x)})
+            image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
+                        soup.find('img', {'alt': lambda x: x and card_name in x})
             
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
@@ -283,25 +251,24 @@ def scrape_card_data(url):
     except requests.exceptions.RequestException as e:
         return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
-        # 记录详细的解析错误
-        return {"error": f"解析错误 (可能在标题或图片提取): {e}"}
+        return {"error": f"解析错误: {e}"}
 
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
 
-# 获取动态 key suffix (用于在提交/清除后重置所有 input 控件)
-suffix = str(st.session_state['form_key_suffix'])
+suffix = str(st.session_state['form_key_suffix']) # 用于生成动态 key
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
-    # ... (录入部分保持不变，但提交按钮 now uses spinner)
     st.header("🌐 网页自动填充")
+    
+    # 使用动态 key 来确保清空操作可以重置输入框
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
     
     with col_scrape_btn:
-        if st.button("一键抓取并填充", type="secondary"):
+        if st.button("一键抓取并填充", type="secondary", key=f"scrape_btn_{suffix}"):
             if not scrape_url:
                  st.warning("请输入网址。")
             else:
@@ -311,16 +278,17 @@ with st.sidebar:
                 else:
                     st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
-                st.rerun()
+                st.rerun() # 强制刷新以更新表单
                  
     with col_clear_btn:
-        if st.button("一键清除录入内容", type="primary"):
+        if st.button("一键清除录入内容", type="primary", key=f"clear_btn_{suffix}"):
             clear_all_data()
-            st.rerun() 
+            st.rerun() # 强制刷新以清空表单
 
     st.divider()
     st.header("📝 手动录入/修正")
     
+    # 预填充抓取结果
     res = st.session_state['scrape_result']
     name_default = res.get('card_name', "")
     number_default = res.get('card_number', "")
@@ -329,6 +297,7 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
+    # 录入字段
     card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
     name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_{suffix}")
     set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_{suffix}") 
@@ -352,24 +321,23 @@ with st.sidebar:
         except: 
             st.warning("无法加载该链接的图片。")
 
-    if st.button("提交录入", type="primary"):
+    if st.button("提交录入", type="primary", key=f"submit_btn_{suffix}"):
         if name_in:
             with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、5.0秒お待ちください..."):
+                # 顺序: name, number, set, price, quantity, rarity, color, date, image_url
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
-            st.session_state['form_key_suffix'] += 1 
-            
+            st.session_state['form_key_suffix'] += 1
             st.success(f"已录入: {name_in}")
-            st.rerun() 
+            st.rerun()
         else:
             st.error("卡牌名称不能为空！")
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 修正: load_data にフラグを渡すことで、キャッシュを厳密に制御
-df = load_data(st.session_state['data_is_fresh']) 
+df = load_data(st.session_state['form_key_suffix']) # 使用 suffix 强制缓存刷新
 
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
@@ -379,14 +347,11 @@ else:
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
     df['color'] = df['color'].fillna('') 
-    df['card_set'] = df['card_set'].fillna('') 
-    df['card_number'] = df['card_number'].fillna('') 
+    df['card_set'] = df['card_set'].fillna('') # 确保系列不为 NaN
+    df['card_number'] = df['card_number'].fillna('') # 确保编号不为 NaN
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     df = df.dropna(subset=['date_dt']) 
     
-    # 将原始 DataFrame 存储到 session state
-    st.session_state['current_df'] = df.copy()
-
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3 = st.columns(3) 
@@ -396,15 +361,20 @@ else:
 
     # 筛选逻辑
     filtered_df = df.copy()
-    
     if search_name:
+        # 1. 清理搜索输入
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
+        
+        # 2. 对需要搜索的字段进行清理和连接
         search_target = (
             filtered_df['card_name'].astype(str).apply(normalize_text_for_fuzzy_search) + 
             filtered_df['card_number'].astype(str).apply(normalize_text_for_fuzzy_search) + 
             filtered_df['id'].astype(str).apply(normalize_text_for_fuzzy_search)
         )
+        
+        # 3. 执行模糊搜索 (在清理后的文本中搜索清理后的关键词)
         search_condition = search_target.str.contains(cleaned_search_name, case=False, na=False)
+        
         filtered_df = filtered_df[search_condition]
         
     if search_set:
@@ -412,42 +382,22 @@ else:
     if len(date_range) == 2:
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
 
-    # --- 🗑️ 删除逻辑处理 ---
-    # 在 filtered_df 中移除待删除的行 (即时删除)
-    filtered_df = filtered_df[~filtered_df['id'].isin(st.session_state['rows_to_delete'])]
-    
     # 准备用于展示和编辑的 DataFrame
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore').copy()
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+
+    # 强制将 'date' 列从字符串转换为 date 对象，以避免 st.data_editor 无限循环
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
-    st.markdown("### 📝 数据编辑与删除 (即时删除)") 
+    st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
+    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 `Delete` 键。删除后请点击下方的 **保存** 按钮。")
     
-    # --- 按钮点击回调处理 ---
-    # 检查是否有删除按钮被点击
-    if 'data_editor' in st.session_state and 'edited_rows' in st.session_state['data_editor']:
-        
-        # 查找被点击的删除按钮的行索引
-        delete_clicks = st.session_state['data_editor']['edited_rows']
-        
-        for index, edits in delete_clicks.items():
-            if 'delete_button' in edits and edits['delete_button']:
-                # 获取被点击行的 ID
-                deleted_id = display_df.iloc[index]['id']
-                
-                # 1. 标记为待删除
-                st.session_state['rows_to_delete'].add(deleted_id)
-                
-                # 2. 清除 data_editor 的状态，防止无限循环
-                del st.session_state['data_editor']['edited_rows'][index]['delete_button']
-                
-                # 3. 强制重新运行脚本，实现即时删除效果
-                st.rerun()
-
-    # --- 表格配置 ---
+    # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
+    # 确保 display_df 包含 'id'
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
+    # 配置列显示名称和格式 
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True), 
         "date": st.column_config.DateColumn("录入时间"), 
@@ -459,44 +409,34 @@ else:
         "rarity": "等级", 
         "color": "颜色",
         "image_url": st.column_config.ImageColumn("卡图", width="small"),
-        # 新增删除按钮列
-        "delete_button": st.column_config.ButtonColumn("删除", help="点击即时删除该行", width="small", disabled=False), 
     }
     
+    # 使用 st.data_editor 实现表格编辑功能
     edited_df = st.data_editor(
-        display_df.assign(delete_button='删除'), # 必须添加一个基础列，才能配置 ButtonColumn
+        display_df,
         key="data_editor",
         use_container_width=True, 
         hide_index=True,
-        # 禁用 data_editor 自带的行删除功能
-        num_rows="fixed", # 阻止用户手动添加或删除行
-        column_order=['id'] + FINAL_DISPLAY_COLUMNS + ['delete_button'],
+        column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
+        num_rows="dynamic", # <<< 关键：允许用户通过 UI (菜单或 Delete 键) 删除行
     )
 
-    # 检查是否有编辑变动或待删除行
-    has_edits = st.session_state["data_editor"]["edited_rows"]
-    has_deletes = len(st.session_state['rows_to_delete']) > 0
-    
-    if has_edits or has_deletes:
+    # 检查是否有编辑变动或删除操作
+    if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
+        st.warning("⚠️ 数据修改或删除操作已检测到。请点击 **保存修改** 按钮！")
         
-        # 从 edited_df 中移除 'delete_button' 列
-        final_df_to_save = edited_df.drop(columns=['delete_button'], errors='ignore')
-
-        st.caption(f"检测到 {len(st.session_state['rows_to_delete'])} 条待删除记录，及 {len(has_edits)} 条修改。请点击 **保存修改** 按钮。")
+        final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
-            with st.spinner("🚀 数据保存中... 写入 Google Sheets 并清除待删除记录，请稍候 5.0 秒"):
-                # 保存逻辑：将 edited_df (应用编辑) 和 rows_to_delete (应用删除) 写入 Sheets
-                success = update_data_and_save(final_df_to_save, st.session_state['rows_to_delete'])
-            
-            if success:
-                st.rerun() # 强制刷新
-            
+            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、5.0秒お待ちください..."):
+                update_data_and_save(final_df_to_save)
+            st.rerun()
+
+    
     st.divider()
     
     # --- 📊 单卡深度分析面板 ---
-    # ... (分析部分保持不变)
     st.markdown("### 📊 单卡深度分析")
     
     analysis_df = filtered_df.copy() 
@@ -504,15 +444,17 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # ... (分析图表和指标逻辑保持不变)
+        # 使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
         analysis_df['unique_label'] = analysis_df.apply(
             lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
             axis=1
         )
         
+        # 下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果。
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         
+        # 使用选定的唯一标签进行筛选
         target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
@@ -535,14 +477,19 @@ else:
                 curr_price = target_df.iloc[-1]['price']
                 total_quantity = target_df['quantity'].sum()
                 
+                # 获取历史最高价及对应日期
                 max_price = target_df['price'].max()
+                # 找到所有匹配最高价的记录，取第一条的日期
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
                 
+                # 获取历史最低价及对应日期
                 min_price = target_df['price'].min()
+                # 找到所有匹配最低价的记录，取第一条的日期
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
 
                 st.metric("最近成交价", f"¥{curr_price:,.0f}")
                 
+                # 展示最高价和最低价的录入日期
                 st.markdown(f"**📈 历史最高**：¥{max_price:,.0f} (于 **{max_price_date}** 录入)")
                 st.markdown(f"**📉 历史最低**：¥{min_price:,.0f} (于 **{min_price_date}** 录入)")
                 
@@ -556,6 +503,7 @@ else:
         with col_chart:
             st.caption("价格走势图")
             if len(target_df) > 1:
+                # 使用 date_dt 列 (datetime 对象) 确保图表正确
                 st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
