@@ -5,8 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
-# 移除 gspread 和 gspread_dataframe 导入
-
 # 导入 Supabase 客户端库
 from supabase import create_client, Client 
 # 导入 time 库，但我们不再调用 time.sleep()
@@ -92,8 +90,6 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     
     try:
         # 1. 计算新的 ID
-        # ⚠️ 注意：如果 Supabase 表配置为自动递增 ID (Serial)，则不需要这一步
-        # 如果不是，则需要手动计算以保证 id 唯一
         df = load_data(st.session_state['data_version']) 
         max_id = pd.to_numeric(df['id'], errors='coerce').max()
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
@@ -115,7 +111,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         # 3. 执行插入操作，即时生效
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        # 🚀 移除 time.sleep()！
+        # 🚀 已移除 time.sleep()！
 
         st.cache_data.clear()
         st.session_state['data_version'] += 1 
@@ -141,14 +137,14 @@ def update_data_and_save(edited_df):
 
         # 2. 核心操作：删除所有旧数据，然后重新插入所有新数据
         
-        # A. 删除所有现有数据 (neq('id', 0) 是一个安全且快速的删除所有行的方法)
+        # A. 删除所有现有数据 
         supabase.table(SUPABASE_TABLE_NAME).delete().neq('id', 0).execute() 
 
         # B. 插入所有新数据 (包括修改和保留的行，已删除的行不会包含在 data_to_save 中)
         if data_to_save:
             supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
         
-        # 🚀 移除 time.sleep()！
+        # 🚀 已移除 time.sleep()！
 
         st.cache_data.clear()
         st.session_state['data_version'] += 1 
