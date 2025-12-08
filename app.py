@@ -7,7 +7,7 @@ import re
 import gspread 
 import gspread_dataframe as gd
 import numpy as np 
-import time # <<< 新增: 用于在写入 Google Sheets 后等待，确保操作完成
+import time # 用于在写入 Google Sheets 后等待，确保操作完成
 
 # === 配置 ===
 SHEET_NAME = "数据表" 
@@ -118,7 +118,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
-        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
+        time.sleep(1.0) # 修正：等待 Google Sheets 写入完成，提高稳定性
 
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -126,37 +126,10 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Sheets 失败。错误: {e}")
 
-# 删除卡牌函数
-def delete_card(card_id):
-    sh = connect_gspread()
-    if not sh: 
-        st.error("无法连接 Google Sheets。")
-        return
-    
-    try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        # 注意: load_data() 此时仍可能从缓存中读取旧数据
-        df = load_data() 
-        
-        # 过滤掉要删除的行
-        df_updated = df[df['id'] != card_id]
-        
-        # 确保只保留 NEW_EXPECTED_COLUMNS
-        df_final = df_updated[NEW_EXPECTED_COLUMNS].replace({None: ''}) # 转换 None 为空字符串以写入 Sheets
-        
-        # 覆盖工作表 (这是实际删除操作)
-        gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
-        
-        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
+# 删除卡牌函数 (已弃用，删除操作由 update_data_and_save 通过 data_editor 统一处理)
+# def delete_card(card_id):
+#     ...
 
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.success(f"ID {card_id} 记录已删除！正在刷新页面...")
-        st.rerun() 
-        
-    except Exception as e:
-        st.error(f"删除数据失败。错误: {e}")
-        
 # 处理数据编辑器的内容并保存到 Google Sheets
 def update_data_and_save(edited_df):
     sh = connect_gspread()
@@ -174,10 +147,10 @@ def update_data_and_save(edited_df):
         # 确保列顺序并处理缺失值
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         
-        # 覆盖工作表
+        # 覆盖工作表 (这包含了 data_editor 中的所有修改和删除操作)
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
-        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
+        time.sleep(1.0) # 修正：等待 Google Sheets 写入完成，提高稳定性
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -429,7 +402,7 @@ else:
     # 核心修正：确保日期列是 Python date 对象，以避免 st.data_editor 无限循环
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
-    st.markdown("### 📝 数据编辑（双击单元格修改）") 
+    st.markdown("### 📝 数据编辑（双击单元格修改，支持多选删除）") 
     
     # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -459,58 +432,25 @@ else:
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
+        num_rows="dynamic", # 允许添加/删除行
     )
 
     # 检查是否有编辑变动
+    # 注意: deleted_rows 是一个列表，里面是*原* data_editor 中的行索引
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
-        st.caption("检测到数据修改，请点击 **保存修改** 按钮。")
+        st.caption("检测到数据修改或删除操作，请点击 **保存修改** 按钮。")
         
         final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
+            # 保存逻辑：将 edited_df (已剔除被删除行) 覆盖写入 Sheets
             update_data_and_save(final_df_to_save)
             st.rerun()
 
     
     st.divider()
     
-    # --- ❌ 手动删除记录 (增强展示内容) ---
-    st.markdown("### ❌ 手动删除记录")
-    
-    if not filtered_df.empty:
-        # 增强删除记录的显示内容
-        delete_options = filtered_df.sort_values(by='date', ascending=False).apply(
-            lambda x: f"ID {x['id']} | {x['date']} | {x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']} @ ¥{x['price']:,.0f}", 
-            axis=1
-        )
-        
-        col_del_select, col_del_btn = st.columns([3, 1])
-        
-        with col_del_select:
-            if not delete_options.empty:
-                selected_delete_option = st.selectbox("选择要删除的记录:", delete_options)
-            else:
-                selected_delete_option = None
-        
-        if selected_delete_option:
-            # 从选中的字符串中提取 ID
-            delete_id_match = re.search(r'ID (\d+)\s*\|', selected_delete_option)
-            card_id_to_delete = int(delete_id_match.group(1)) if delete_id_match else None
-            
-            with col_del_btn:
-                 # 为了对齐，增加一个占位符
-                 st.markdown("<br>", unsafe_allow_html=True)
-                 if st.button("🔴 确认删除所选记录", type="secondary"):
-                     if card_id_to_delete:
-                         delete_card(card_id_to_delete)
-                     else:
-                         st.error("无法识别要删除的记录 ID。")
-    else:
-        st.info("没有可删除的记录。")
-        
-    st.divider()
-
-    # --- 📊 单卡深度分析面板 (增强展示内容) ---
+    # --- ❌ 移除手动删除记录区，全部使用 data_editor ---
     st.markdown("### 📊 单卡深度分析")
     
     analysis_df = filtered_df.copy() 
@@ -576,8 +516,3 @@ else:
 
         with col_chart:
             st.caption("价格走势图")
-            if len(target_df) > 1:
-                # 使用 date_dt (Datetime 对象) 作为 X 轴，确保图表正确绘制时间序列
-                st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
-            else:
-                st.info("需至少两条记录绘制走势")
