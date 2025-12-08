@@ -4,14 +4,18 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import re 
-import gspread 
-import gspread_dataframe as gd
 import numpy as np 
-import time # <<< 关键：用于在写入 Google Sheets 后强制等待
+# 移除 gspread 和 gspread_dataframe 导入
+
+# 导入 Supabase 客户端库
+from supabase import create_client, Client 
+# 导入 time 库，但我们不再调用 time.sleep()
+import time 
 
 # === 配置 ===
-SHEET_NAME = "数据表" 
-# 定义 Google Sheets 字段顺序
+# 表格名称现在指向 Supabase 中的表名
+SUPABASE_TABLE_NAME = "cards" 
+# 定义 Supabase/Pandas 字段顺序
 NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
 
 # --- Streamlit Session State ---
@@ -27,7 +31,6 @@ if 'data_version' not in st.session_state:
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
-    # 注意：这里不增加 data_version，因为数据本身没有变化
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -36,141 +39,120 @@ def normalize_text_for_fuzzy_search(text):
     """
     if pd.isna(text):
         return ""
-    # 移除连字符 '-' 和空格 ' '
     cleaned = str(text).replace('-', '').replace(' ', '')
     return cleaned.upper()
 
-# === Gspread 数据库函数 ===
+# === Supabase 数据库函数 ===
 
 @st.cache_resource(ttl=None)
-def connect_gspread():
-    """使用 Streamlit Secrets 凭证连接到 Google Sheets API"""
+def connect_supabase() -> Client:
+    """使用 Streamlit Secrets 连接到 Supabase 数据库"""
     try:
-        creds = {
-            "type": st.secrets["gsheets"]["type"],
-            "project_id": st.secrets["gsheets"]["project_id"],
-            "private_key_id": st.secrets["gsheets"]["private_key_id"],
-            "private_key": st.secrets["gsheets"]["private_key"],
-            "client_email": st.secrets["gsheets"]["client_email"],
-            "client_id": st.secrets["gsheets"]["client_id"],
-            "auth_uri": st.secrets["gsheets"]["auth_uri"],
-            "token_uri": st.secrets["gsheets"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gsheets"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gsheets"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["gsheets"]["universe_domain"]
-        }
-        
-        gc = gspread.service_account_from_dict(creds)
-        spreadsheet_url = st.secrets["gsheets"]["spreadsheet_url"]
-        
-        # 兼容性处理：去除 URL 中的 gid 参数
-        base_url = spreadsheet_url.split('/edit')[0] 
-        sh = gc.open_by_url(base_url)
-        
-        return sh
+        url: str = st.secrets["supabase"]["URL"]
+        key: str = st.secrets["supabase"]["KEY"]
+        supabase: Client = create_client(url, key)
+        return supabase
     except Exception as e:
-        st.error(f"无法连接 Google Sheets API。请检查 Secrets 格式、权限及 URL。错误: {e}")
+        st.error(f"无法连接 Supabase 数据库。请检查 secrets.toml 配置。错误: {e}")
         return None
 
-# <<< 关键：load_data 函数现在使用 data_version 作为缓存键
 @st.cache_data(ttl=3600)
 def load_data(data_version):
-    """从 Google Sheets 读取所有数据，使用 data_version 强制刷新缓存"""
-    sh = connect_gspread()
-    if not sh:
+    """从 Supabase 读取所有数据，使用 data_version 强制刷新缓存"""
+    supabase = connect_supabase()
+    if not supabase:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
-        worksheet = sh.worksheet(SHEET_NAME) 
-        df = gd.get_as_dataframe(worksheet)
+        # 使用 select('*') 从 'cards' 表中获取所有数据
+        response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
-        if df.empty or not all(col in df.columns for col in NEW_EXPECTED_COLUMNS):
-            st.warning("Google Sheets 列头结构与代码预期不符。")
-            return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
+        # 将结果转换为 Pandas DataFrame
+        df = pd.DataFrame(response.data)
+        
+        if df.empty:
+             return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
         # 数据清洗和 ID 确保
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
-        if df['id'].duplicated().any() or (df['id'] == 0).any():
-             df['id'] = range(1, len(df) + 1)
         
         # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
 
         return df.sort_values(by='date', ascending=False)
     except Exception as e:
-        st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
+        st.error(f"无法从 Supabase 读取数据。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
 # 新增/追加卡牌
 def add_card(name, number, card_set, price, quantity, rarity, color, date, image_url=None):
-    sh = connect_gspread()
-    if not sh: return
+    supabase = connect_supabase()
+    if not supabase: return
     
     try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        # load_data 函数现在需要 data_version 参数
+        # 1. 计算新的 ID
+        # ⚠️ 注意：如果 Supabase 表配置为自动递增 ID (Serial)，则不需要这一步
+        # 如果不是，则需要手动计算以保证 id 唯一
         df = load_data(st.session_state['data_version']) 
+        max_id = pd.to_numeric(df['id'], errors='coerce').max()
+        new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
-        try:
-            max_id = pd.to_numeric(df['id'], errors='coerce').max()
-            new_id = int(max_id + 1) if pd.notna(max_id) else 1
-        except:
-            new_id = 1
+        # 2. 准备要插入的字典数据
+        new_row_data = {
+            "id": new_id,
+            "date": date.strftime('%Y-%m-%d'),
+            "card_number": number,
+            "card_name": name,
+            "card_set": card_set,
+            "price": price,
+            "quantity": quantity,
+            "rarity": rarity,
+            "color": color,
+            "image_url": image_url if image_url else ""
+        }
         
-        # 准备要追加的行数据 (必须与 NEW_EXPECTED_COLUMNS 顺序一致)
-        new_row = [
-            new_id, 
-            date.strftime('%Y-%m-%d'),
-            number, 
-            name, 
-            card_set, 
-            price, 
-            quantity, 
-            rarity,       
-            color,        
-            image_url if image_url else ""
-        ]
+        # 3. 执行插入操作，即时生效
+        supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        worksheet.append_row(new_row, value_input_option='USER_ENTERED')
-        
-        time.sleep(2.0) # <<< 关键修复：缩短至 2.0 秒
+        # 🚀 移除 time.sleep()！
 
-        # 清除缓存并递增版本号，强制下一次 load_data 读取最新数据
         st.cache_data.clear()
-        st.cache_resource.clear()
         st.session_state['data_version'] += 1 
         
     except Exception as e:
-        st.error(f"追加数据到 Sheets 失败。错误: {e}")
+        st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 处理数据编辑器的内容并保存到 Google Sheets
+# 处理数据编辑器的内容并保存到 Supabase
 def update_data_and_save(edited_df):
-    sh = connect_gspread()
-    if not sh: return
+    supabase = connect_supabase()
+    if not supabase: return
     
     try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        
-        # 数据类型清理和格式化
+        # 1. 数据类型清理和格式化
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        # edited_df 已经排除了被删除的行
+        # 筛选出需要保存的最终列
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
-        
-        # 覆盖工作表 (这包含了 data_editor 中的所有修改和删除操作)
-        gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
-        
-        time.sleep(2.0) # <<< 关键修复：缩短至 2.0 秒
+        data_to_save = df_final.to_dict('records')
 
-        # 清除缓存并递增版本号，强制下一次 load_data 读取最新数据
+        # 2. 核心操作：删除所有旧数据，然后重新插入所有新数据
+        
+        # A. 删除所有现有数据 (neq('id', 0) 是一个安全且快速的删除所有行的方法)
+        supabase.table(SUPABASE_TABLE_NAME).delete().neq('id', 0).execute() 
+
+        # B. 插入所有新数据 (包括修改和保留的行，已删除的行不会包含在 data_to_save 中)
+        if data_to_save:
+            supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
+        
+        # 🚀 移除 time.sleep()！
+
         st.cache_data.clear()
-        st.cache_resource.clear()
         st.session_state['data_version'] += 1 
-        st.success("数据修改已自动保存到 Google 表格！")
+        st.success("数据修改已即时保存到 Supabase！")
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
@@ -182,7 +164,6 @@ def scrape_card_data(url):
         return {"error": "网址格式不正确。"}
     
     try:
-        
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, timeout=10, headers=headers)
         response.raise_for_status() 
@@ -233,12 +214,10 @@ def scrape_card_data(url):
         # --- 5. 提取图片链接 ---
         image_url = None
         
-        # 优先级 1: 尝试通过 og:image meta 标签获取
         og_image_tag = soup.find('meta', property='og:image')
         if og_image_tag:
             image_url = og_image_tag.get('content')
             
-        # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索
         if not image_url:
             image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
                         soup.find('img', {'alt': lambda x: x and card_name in x})
@@ -262,26 +241,22 @@ def scrape_card_data(url):
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
 
-suffix = str(st.session_state['form_key_suffix']) # 用于生成动态 key
+suffix = str(st.session_state['form_key_suffix']) 
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
     st.header("🌐 网页自动填充")
-    
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
     
     with col_scrape_btn:
         if st.button("一键抓取并填充", type="secondary", key=f"scrape_btn_{suffix}"):
-            if not scrape_url:
-                 st.warning("请输入网址。")
+            if not scrape_url: st.warning("请输入网址。")
             else:
                 st.session_state['scrape_result'] = scrape_card_data(scrape_url)
-                if st.session_state['scrape_result']['error']:
-                    st.error(st.session_state['scrape_result']['error'])
-                else:
-                    st.success("数据抓取完成。")
+                if st.session_state['scrape_result']['error']: st.error(st.session_state['scrape_result']['error'])
+                else: st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
                 st.rerun() 
                  
@@ -326,8 +301,7 @@ with st.sidebar:
 
     if st.button("提交录入", type="primary", key=f"submit_btn_{suffix}"):
         if name_in:
-            # <<< 关键：显示 2.0 秒的等待信息
-            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、2.0秒お待ちください..."):
+            with st.spinner("🚀 数据即时保存中..."):
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
@@ -340,7 +314,6 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# <<< 关键：使用 data_version 作为缓存键
 df = load_data(st.session_state['data_version']) 
 
 if df.empty:
@@ -359,7 +332,7 @@ else:
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3 = st.columns(3) 
-    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索，例如输入 'P 113' 也能匹配 'P-113' 或包含 'P113' 的卡牌名称") 
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索") 
     with col_s2: search_set = st.text_input("搜索 系列/版本")
     with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
 
@@ -382,9 +355,21 @@ else:
 
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
-
-    # 强制将 'date' 列从字符串转换为 date 对象
+    # 确保 data_editor 的 date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
+    
+    # --- 📥 数据导出 (用于备份或迁移) ---
+    st.divider()
+    st.markdown("### 📥 数据导出 (用于备份或迁移)")
+    if not df.empty:
+        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        st.download_button(
+            label="下载完整的卡牌数据 (CSV)",
+            data=csv_data,
+            file_name='card_data_full_export.csv',
+            mime='text/csv',
+            help="点击下载 Supabase 中的所有数据，用于备份。"
+        )
 
     st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
     st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）进行多行删除。删除后请点击下方的 **保存** 按钮。")
@@ -413,7 +398,7 @@ else:
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
-        num_rows="dynamic", # 允许用户删除行
+        num_rows="dynamic",
     )
 
     # 检查是否有编辑变动或删除操作
@@ -423,8 +408,7 @@ else:
         final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
-            # <<< 关键：显示 2.0 秒的等待信息
-            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、2.0秒お待ちください..."):
+            with st.spinner("🚀 数据即时保存中..."):
                 update_data_and_save(final_df_to_save)
             st.rerun()
 
