@@ -81,8 +81,7 @@ def load_data():
         # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
 
-        # デフォルトのソートを ID 降順に変更
-        return df.sort_values(by='id', ascending=False)
+        return df.sort_values(by='date', ascending=False)
     except Exception as e:
         st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -174,7 +173,7 @@ def update_data_and_save(edited_df):
         
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.success("数据修改已自动保存到 Google 表格！") 
+        st.success("数据修改已自动保存到 Google 表格！")
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
@@ -202,50 +201,38 @@ def scrape_card_data(url):
         card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
         temp_title = full_title 
 
-        # 1. 提取 rarity (例如：【R】)
+        # 1. 提取 rarity
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
-            # 移除rarity部分，并确保清理字符串
-            temp_title = temp_title.replace(rarity_match.group(0), '').strip()
+            temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
         
-        # 2. 提取 color (例如：《红》)
+        # 2. 提取 color
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
-            # 移除color部分，并确保清理字符串
-            temp_title = temp_title.replace(color_match.group(0), '').strip()
+            temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
-        # 3. 提取 card_number (例如：P-028 或 EB03-061)
+        # 3. 提取 card_number
+        # 使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
+        # 匹配格式： [1+字母/数字] - [2+数字]
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
         if number_match:
             card_number = number_match.group(1).strip()
-            # 移除card_number部分，剩下的用于提取卡名和系列
-            temp_title_without_number = temp_title.replace(number_match.group(0), '').strip()
+            temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
         else:
-            temp_title_without_number = temp_title.strip()
+            temp_title_without_number = temp_title
         
-        # 4. 提取 card_set 和 card_name (修正重点)
-        
-        # 尝试提取括号内的系列/版本信息 (支持全角/半角)
-        card_set_match = re.search(r'[\(（](.+?)[\)）]', temp_title_without_number)
-        
-        if card_set_match:
-            # 提取括号内的内容作为系列名
-            card_set = card_set_match.group(1).strip()
-            # 从标题中移除括号及内容，剩下的就是卡名
-            card_name = temp_title_without_number.replace(card_set_match.group(0), '').strip()
+        # 4. 提取 card_set 和 card_name
+        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
+        if name_part:
+            card_name = name_part.group(1).strip()
+            card_set = temp_title_without_number[len(name_part.group(0)):].strip()
         else:
-            # 如果没有明显的括号包裹的系列信息，整个剩余的字符串就是卡名
             card_name = temp_title_without_number.strip()
             card_set = ""
             
-        # 确保卡名不为空，如果为空，则回退到原始标题（去掉编号和rarity/color）
-        if not card_name:
-             card_name = temp_title_without_number.strip()
-
-        # 对系列名进行最终清理，移除可能残留的其他日式括号
         card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
         
         # --- 5. 提取图片链接 ---
@@ -258,9 +245,8 @@ def scrape_card_data(url):
             
         # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索
         if not image_url:
-            # 使用更宽泛的搜索，不依赖于 card_name（因为 card_name 可能此时仍不准确）
-            image_tag = soup.find('img', {'alt': lambda x: x and ('メイン画像' in x or 'カード' in x)}) or \
-                        soup.find('img', {'src': lambda x: x and ('card_image' in x or 'images' in x)})
+            image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
+                        soup.find('img', {'alt': lambda x: x and card_name in x})
             
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
@@ -276,19 +262,15 @@ def scrape_card_data(url):
     except requests.exceptions.RequestException as e:
         return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
-        # 记录详细的解析错误
-        return {"error": f"解析错误 (可能在标题或图片提取): {e}"}
+        return {"error": f"解析错误: {e}"}
 
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
-if 'form_key_suffix' not in st.session_state: 
-    st.session_state['form_key_suffix'] = 0
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['scrape_url_input'] = ""
-    st.session_state['form_key_suffix'] += 1 
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
@@ -327,25 +309,22 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    # 获取动态 key suffix
-    suffix = str(st.session_state['form_key_suffix'])
-
-    # 录入字段 - 使用动态 key 来确保提交后清空
-    card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
-    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_{suffix}")
-    set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_{suffix}") 
-    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_{suffix}") 
-    color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_{suffix}") 
+    # 录入字段
+    card_number_in = st.text_input("1. 卡牌编号", value=number_default)
+    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default)
+    set_in = st.text_input("3. 系列/版本", value=set_default) 
+    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default) 
+    color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default) 
     
-    price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_{suffix}")
-    quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_{suffix}")
+    price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0)
+    quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1)
     
-    date_in = st.date_input("8. 录入日期", datetime.now(), key=f"date_in_{suffix}")
+    date_in = st.date_input("8. 录入日期", datetime.now())
 
     st.divider()
     st.write("🖼️ 卡牌图片 (可修正)")
 
-    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_{suffix}")
+    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
     final_image_path = image_url_input if image_url_input else None
     
     if final_image_path:
@@ -360,10 +339,8 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
-            st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空表单
-            
             st.success(f"已录入: {name_in}")
-            st.rerun() # 强制刷新并回到页面最上方
+            st.rerun()
         else:
             st.error("卡牌名称不能为空！")
 
@@ -421,7 +398,7 @@ else:
     # 强制将 'date' 列从字符串转换为 datetime 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
 
-    st.markdown("### 📝 数据编辑（双击单元格修改后，自动保存）") 
+    st.markdown("### 📝 数据编辑（双击单元格修改）")
     
     # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -453,17 +430,15 @@ else:
         column_config=column_config_dict,
     )
 
-    # 检查是否有编辑变动并自动保存
+    # 检查是否有编辑变动
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
-        st.info("检测到数据修改，正在自动保存到 Google 表格...") 
+        st.caption("检测到数据修改，请点击 **保存修改** 按钮。")
         
         final_df_to_save = edited_df
         
-        # 立即执行保存
-        update_data_and_save(final_df_to_save)
-        
-        # 保存後に強制リロードし、最新データ（かつ非編集状態）でテーブルを再描画する
-        st.rerun()
+        if st.button("💾 确认并保存所有修改", type="primary"):
+            update_data_and_save(final_df_to_save)
+            st.rerun()
 
     
     st.divider()
@@ -472,7 +447,7 @@ else:
     st.markdown("### ❌ 手动删除记录")
     
     if not filtered_df.empty:
-        # 增强删除记录的显示内容
+        # 【修改点】：增强删除记录的显示内容
         delete_options = filtered_df.sort_values(by='date', ascending=False).apply(
             lambda x: f"ID {x['id']} | {x['date']} | {x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']} @ ¥{x['price']:,.0f}", 
             axis=1
@@ -512,7 +487,7 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # 使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
+        # 【修改点】：使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
         analysis_df['unique_label'] = analysis_df.apply(
             lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
             axis=1
@@ -538,7 +513,6 @@ else:
             else:
                 st.empty()
                 st.caption("暂无图片")
-
 
         with col_stat:
             st.caption("价格统计")
