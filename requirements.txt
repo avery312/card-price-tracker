@@ -1,8 +1,6 @@
-streamlit>=1.30.0
+streamlit
 pandas
+numpy
 requests
 beautifulsoup4
-gspread
-gspread-dataframe
-pandas
 supabase-py
