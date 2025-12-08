@@ -81,7 +81,8 @@ def load_data():
         # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
 
-        return df.sort_values(by='date', ascending=False)
+        # デフォルトのソートを ID 降順に変更
+        return df.sort_values(by='id', ascending=False)
     except Exception as e:
         st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -159,21 +160,21 @@ def update_data_and_save(edited_df):
     try:
         worksheet = sh.worksheet(SHEET_NAME)
         
-        # 数据类型清理和格式化
+        # データ型クリーニングとフォーマット
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        # 确保列顺序并处理缺失值
+        # 列順序の確認と欠損値の処理
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         
-        # 覆盖工作表
+        # ワークシートを上書き保存
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.success("数据修改已自动保存到 Google 表格！")
+        st.success("数据修改已自动保存到 Google 表格！") # 日本語での応答のため、メッセージはそのままにしておきます
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
@@ -267,10 +268,13 @@ def scrape_card_data(url):
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
+if 'form_key_suffix' not in st.session_state: # 【新增】用于强制重置表单
+    st.session_state['form_key_suffix'] = 0
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['scrape_url_input'] = ""
+    st.session_state['form_key_suffix'] += 1 # 【新增】递增 suffix 以重置所有输入框
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
@@ -309,22 +313,25 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    # 录入字段
-    card_number_in = st.text_input("1. 卡牌编号", value=number_default)
-    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default)
-    set_in = st.text_input("3. 系列/版本", value=set_default) 
-    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default) 
-    color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default) 
+    # 获取动态 key suffix
+    suffix = str(st.session_state['form_key_suffix'])
+
+    # 录入字段 - 使用动态 key 来确保提交后清空
+    card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
+    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_{suffix}")
+    set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_{suffix}") 
+    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_{suffix}") 
+    color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_{suffix}") 
     
-    price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0)
-    quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1)
+    price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_{suffix}")
+    quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_{suffix}")
     
-    date_in = st.date_input("8. 录入日期", datetime.now())
+    date_in = st.date_input("8. 录入日期", datetime.now(), key=f"date_in_{suffix}")
 
     st.divider()
     st.write("🖼️ 卡牌图片 (可修正)")
 
-    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default)
+    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_{suffix}")
     final_image_path = image_url_input if image_url_input else None
     
     if final_image_path:
@@ -339,8 +346,10 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
+            st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空表单
+            
             st.success(f"已录入: {name_in}")
-            st.rerun()
+            st.rerun() # 强制刷新并回到页面最上方
         else:
             st.error("卡牌名称不能为空！")
 
@@ -398,7 +407,7 @@ else:
     # 强制将 'date' 列从字符串转换为 datetime 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce') 
 
-    st.markdown("### 📝 数据编辑（双击单元格修改）")
+    st.markdown("### 📝 数据编辑（双击单元格修改后，自动保存）") # 表示を更新
     
     # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -430,15 +439,18 @@ else:
         column_config=column_config_dict,
     )
 
+    # 【修正箇所】チェックと自動保存ロジック
     # 检查是否有编辑变动
     if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
-        st.caption("检测到数据修改，请点击 **保存修改** 按钮。")
+        st.info("检测到数据修改，正在自动保存到 Google 表格...") 
         
         final_df_to_save = edited_df
         
-        if st.button("💾 确认并保存所有修改", type="primary"):
-            update_data_and_save(final_df_to_save)
-            st.rerun()
+        # 立即执行保存
+        update_data_and_save(final_df_to_save)
+        
+        # 保存後に強制リロードし、最新データ（かつ非編集状態）でテーブルを再描画する
+        st.rerun()
 
     
     st.divider()
@@ -447,7 +459,7 @@ else:
     st.markdown("### ❌ 手动删除记录")
     
     if not filtered_df.empty:
-        # 【修改点】：增强删除记录的显示内容
+        # 增强删除记录的显示内容
         delete_options = filtered_df.sort_values(by='date', ascending=False).apply(
             lambda x: f"ID {x['id']} | {x['date']} | {x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']} @ ¥{x['price']:,.0f}", 
             axis=1
@@ -487,7 +499,7 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # 【修改点】：使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
+        # 使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
         analysis_df['unique_label'] = analysis_df.apply(
             lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
             axis=1
@@ -513,6 +525,7 @@ else:
             else:
                 st.empty()
                 st.caption("暂无图片")
+
 
         with col_stat:
             st.caption("价格统计")
