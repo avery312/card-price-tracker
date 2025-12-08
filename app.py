@@ -18,7 +18,7 @@ if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
-# 移除 data_version 变量，不再使用其控制缓存
+# 移除了 data_version 变量
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
@@ -45,7 +45,7 @@ def connect_supabase() -> Client:
         st.error(f"无法连接 Supabase 数据库。请检查 secrets.toml 配置。错误: {e}")
         return None
 
-# 🔑 关键修复：移除 @st.cache_data 装饰器！
+# 🔑 关键修复：load_data 不再使用 @st.cache_data
 def load_data():
     """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
@@ -53,7 +53,7 @@ def load_data():
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
-        # 直接读取数据，无需 data_version 参数
+        # 直接读取数据
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
         df = pd.DataFrame(response.data)
@@ -77,7 +77,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
-        # 1. 直接查询 Supabase 获取最大的 ID (最可靠的 ID 生成方式)
+        # 1. 直接查询 Supabase 获取最大的 ID 
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
         
         max_id = 0
@@ -103,8 +103,6 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         # 3. 执行插入操作
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
-        
-        # 🔑 移除 data_version 递增
         
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
@@ -254,33 +252,39 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
-    name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_{suffix}")
-    set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_{suffix}") 
-    rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_{suffix}") 
-    color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_{suffix}") 
     
-    price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_{suffix}")
-    quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_{suffix}")
-    
-    date_in = st.date_input("8. 录入日期", datetime.now(), key=f"date_in_{suffix}")
+    # 🔑 关键修复：使用 st.form 包裹手动输入和提交按钮
+    # 使用唯一的 key 确保表单不会因 session state 变化而混淆
+    with st.form(key=f"manual_entry_form_{suffix}"):
+        card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_form_{suffix}")
+        name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_form_{suffix}")
+        set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_form_{suffix}") 
+        rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_form_{suffix}") 
+        color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
+        
+        price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
+        quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
+        
+        date_in = st.date_input("8. 录入日期", datetime.now(), key=f"date_in_form_{suffix}")
 
-    st.divider()
-    st.write("🖼️ 卡牌图片 (可修正)")
+        st.divider()
+        st.write("🖼️ 卡牌图片 (可修正)")
 
-    image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_{suffix}")
-    final_image_path = image_url_input if image_url_input else None
-    
-    if final_image_path:
-        try:
-            st.image(final_image_path, caption="预览", use_container_width=True)
-        except: 
-            st.warning("无法加载该链接的图片。")
+        image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_form_{suffix}")
+        final_image_path = image_url_input if image_url_input else None
+        
+        if final_image_path:
+            try:
+                st.image(final_image_path, caption="预览", use_container_width=True)
+            except: 
+                st.warning("无法加载该链接的图片。")
 
-    if st.button("提交录入", type="primary", key=f"submit_btn_{suffix}"):
+        # 使用 st.form_submit_button 替换 st.button
+        submitted = st.form_submit_button("提交录入", type="primary")
+
+    if submitted:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
-                # 提交数据
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             # 清除侧边栏输入状态
@@ -295,7 +299,7 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 🔑 关键：直接调用 load_data()，每次 rerum 都会执行数据库读取
+# 🔑 load_data() 每次 rerun 都会执行数据库读取
 df = load_data() 
 
 if df.empty:
