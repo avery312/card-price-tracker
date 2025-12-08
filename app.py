@@ -202,42 +202,50 @@ def scrape_card_data(url):
         card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
         temp_title = full_title 
 
-        # 1. 提取 rarity
+        # 1. 提取 rarity (例如：【R】)
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
-            # 【修正】将匹配到的部分替换为空字符串，以确保后续提取的字符串干净
+            # 移除rarity部分，并确保清理字符串
             temp_title = temp_title.replace(rarity_match.group(0), '').strip()
         
-        # 2. 提取 color
+        # 2. 提取 color (例如：《红》)
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
-            # 【修正】将匹配到的部分替换为空字符串，以确保后续提取的字符串干净
+            # 移除color部分，并确保清理字符串
             temp_title = temp_title.replace(color_match.group(0), '').strip()
         
-        # 3. 提取 card_number
-        # 使用更灵活的正则表达式识别卡号 (例如 P-028 或 EB03-061)
-        # 匹配格式： [1+字母/数字] - [2+数字]
+        # 3. 提取 card_number (例如：P-028 或 EB03-061)
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
         if number_match:
             card_number = number_match.group(1).strip()
-            # 【修正】将匹配到的卡号替换为空字符串，以确保后续提取的字符串干净
+            # 移除card_number部分，剩下的用于提取卡名和系列
             temp_title_without_number = temp_title.replace(number_match.group(0), '').strip()
         else:
             temp_title_without_number = temp_title.strip()
         
-        # 4. 提取 card_set 和 card_name
-        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number)
+        # 4. 提取 card_set 和 card_name (修正重点)
         
-        if name_part:
-            card_name = name_part.group(1).strip()
-            card_set = temp_title_without_number[len(name_part.group(0)):].strip()
+        # 尝试提取括号内的系列/版本信息 (支持全角/半角)
+        card_set_match = re.search(r'[\(（](.+?)[\)）]', temp_title_without_number)
+        
+        if card_set_match:
+            # 提取括号内的内容作为系列名
+            card_set = card_set_match.group(1).strip()
+            # 从标题中移除括号及内容，剩下的就是卡名
+            card_name = temp_title_without_number.replace(card_set_match.group(0), '').strip()
         else:
+            # 如果没有明显的括号包裹的系列信息，整个剩余的字符串就是卡名
             card_name = temp_title_without_number.strip()
             card_set = ""
             
+        # 确保卡名不为空，如果为空，则回退到原始标题（去掉编号和rarity/color）
+        if not card_name:
+             card_name = temp_title_without_number.strip()
+
+        # 对系列名进行最终清理，移除可能残留的其他日式括号
         card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
         
         # --- 5. 提取图片链接 ---
@@ -250,8 +258,9 @@ def scrape_card_data(url):
             
         # 优先级 2: 如果未通过 og:image 获取，则尝试旧的 img 标签搜索
         if not image_url:
-            image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
-                        soup.find('img', {'alt': lambda x: x and card_name in x})
+            # 使用更宽泛的搜索，不依赖于 card_name（因为 card_name 可能此时仍不准确）
+            image_tag = soup.find('img', {'alt': lambda x: x and ('メイン画像' in x or 'カード' in x)}) or \
+                        soup.find('img', {'src': lambda x: x and ('card_image' in x or 'images' in x)})
             
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
@@ -267,7 +276,8 @@ def scrape_card_data(url):
     except requests.exceptions.RequestException as e:
         return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
-        return {"error": f"解析错误: {e}"}
+        # 记录详细的解析错误
+        return {"error": f"解析错误 (可能在标题或图片提取): {e}"}
 
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
