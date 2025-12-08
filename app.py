@@ -5,7 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
-# 导入 Supabase 客户端库 (已修正为 'supabase')
 from supabase import create_client, Client 
 import time 
 
@@ -18,6 +17,7 @@ if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
+# <<< 关键：用于强制刷新主页数据缓存的版本号
 if 'data_version' not in st.session_state:
     st.session_state['data_version'] = 0
 
@@ -67,7 +67,6 @@ def load_data(data_version):
         
         df = df[NEW_EXPECTED_COLUMNS] 
 
-        # 注意：这里不再对 date 排序，以确保 ID 是唯一的排序键
         return df
     except Exception as e:
         st.error(f"无法从 Supabase 读取数据。错误: {e}")
@@ -98,7 +97,8 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
-        st.cache_data.clear()
+        # 🔑 仅依赖 data_version 改变来打破 st.cache_data 缓存
+        # st.cache_data.clear() # <--- 移除不必要的全局清除
         st.session_state['data_version'] += 1 
         
     except Exception as e:
@@ -125,7 +125,8 @@ def update_data_and_save(edited_df):
         if data_to_save:
             supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
         
-        st.cache_data.clear()
+        # 🔑 仅依赖 data_version 改变来打破 st.cache_data 缓存
+        # st.cache_data.clear() # <--- 移除不必要的全局清除
         st.session_state['data_version'] += 1 
         st.success("数据修改已即时保存到 Supabase！")
     except Exception as e:
@@ -282,13 +283,14 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             st.success(f"已录入: {name_in}")
-            st.rerun()
+            st.rerun() # <-- 强制重新执行脚本
         else:
             st.error("卡牌名称不能为空！")
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
+# 传递 data_version 变量，确保每次 data_version 改变时，load_data 都被强制执行
 df = load_data(st.session_state['data_version']) 
 
 if df.empty:
@@ -333,7 +335,7 @@ else:
     # 确保 data_editor 的 date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
-    # 🔑 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
+    # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
     display_df = display_df.sort_values(by='id', ascending=False)
     
     # --- 📥 数据导出 (用于备份或迁移) ---
