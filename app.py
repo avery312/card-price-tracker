@@ -20,6 +20,11 @@ if 'form_key_suffix' not in st.session_state:
     st.session_state['form_key_suffix'] = 0
 # 移除了 data_version 变量
 
+# 新增：用于在录入后返回顶部的状态
+if 'submission_success_message' not in st.session_state: 
+    st.session_state['submission_success_message'] = None
+
+
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
@@ -291,9 +296,8 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            st.success(f"✅ 已成功录入: {name_in}")
-            # **新增/修改**：增加短暂延迟，确保 Streamlit 渲染成功提示，并触发从顶部的脚本重新运行
-            time.sleep(0.5) 
+            # **关键修改：将成功消息存入 session state**
+            st.session_state['submission_success_message'] = f"✅ 已成功录入: {name_in}。页面已自动返回顶部。"
             
             # 强制重新执行脚本
             st.rerun() 
@@ -302,6 +306,13 @@ with st.sidebar:
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
+
+# **关键修改：在主页面顶部检查并显示成功消息**
+if st.session_state.submission_success_message:
+    st.success(st.session_state.submission_success_message)
+    # 清除消息，防止在后续操作中反复显示
+    st.session_state['submission_success_message'] = None
+
 
 # 🔑 load_data() 每次 rerun 都会执行数据库读取
 df = load_data() 
@@ -459,7 +470,7 @@ else:
             else:
                 st.info("需至少两条记录绘制走势")
     
-    # --- 📥 数据导出 (用于备份或迁移) --- (已移动至最底部)
+    # --- 📥 数据导出 (用于备份或迁移) ---
     st.divider()
     st.markdown("### 📥 数据导出 (用于备份或迁移)")
     if not df.empty:
