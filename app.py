@@ -81,7 +81,6 @@ def load_data():
         # 确保列顺序
         df = df[NEW_EXPECTED_COLUMNS] 
 
-        # 默认按日期降序排列
         return df.sort_values(by='date', ascending=False)
     except Exception as e:
         st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
@@ -174,12 +173,12 @@ def update_data_and_save(edited_df):
         
         st.cache_data.clear()
         st.cache_resource.clear()
-        st.success("数据修改已自动保存到 Google 表格！") 
+        st.success("数据修改已自动保存到 Google 表格！")
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
 
-# 网页抓取函数
+# 网页抓取函数 
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -310,8 +309,10 @@ with st.sidebar:
                 st.rerun()
                  
     with col_clear_btn:
-        st.button("一键清除录入内容", type="primary", on_click=clear_all_data)
-        st.rerun()
+        # 修复：确保清除操作也能触发页面刷新，以重置 input 控件
+        if st.button("一键清除录入内容", type="primary"):
+            clear_all_data()
+            st.rerun() 
 
     st.divider()
     st.header("📝 手动录入/修正")
@@ -325,7 +326,7 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    # 获取动态 key suffix
+    # 获取动态 key suffix (用于在提交后清除表单内容)
     suffix = str(st.session_state['form_key_suffix'])
 
     # 录入字段 - 使用动态 key 来确保提交后清空/更新
@@ -415,11 +416,9 @@ else:
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
 
     # 准备用于展示和编辑的 DataFrame
-    # ⬇️ 修复：使用 .copy() 避免潜在警告
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore').copy()
 
-    # ⬇️ 核心修复：将 Pandas Datetime 对象转换为 Python Date 对象
-    # 确保与 st.column_config.DateColumn 兼容，解决加载循环问题
+    # ⬇️ 核心修复 1: 确保日期列是 Python date 对象，以避免 st.data_editor 无限循环
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     st.markdown("### 📝 数据编辑（双击单元格修改）") 
@@ -538,7 +537,6 @@ else:
                 st.empty()
                 st.caption("暂无图片")
 
-
         with col_stat:
             st.caption("价格统计")
             if not target_df.empty:
@@ -571,6 +569,7 @@ else:
         with col_chart:
             st.caption("价格走势图")
             if len(target_df) > 1:
-                st.line_chart(target_df, x="date", y="price", color="#FF4B4B")
+                # ⬇️ 修正 2: 使用 date_dt (Datetime 对象) 作为 X 轴，确保图表正确绘制时间序列
+                st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
