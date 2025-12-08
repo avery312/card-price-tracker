@@ -24,11 +24,18 @@ if 'submission_successful' not in st.session_state:
     st.session_state['submission_successful'] = False
 if 'submitted_card_name' not in st.session_state: 
     st.session_state['submitted_card_name'] = "" 
+    
+# 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
+if 'last_entry_date' not in st.session_state:
+    st.session_state['last_entry_date'] = datetime.now().date() 
+
 # 移除了 data_version 变量
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
+    # 【新增/修正】：清除操作时，将录入日期重置为今日
+    st.session_state['last_entry_date'] = datetime.now().date() 
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -139,7 +146,7 @@ def update_data_and_save(edited_df):
         st.error(f"保存修改失败。错误: {e}")
 
 
-# 网页抓取函数 (已更新，增加 ≪収録≫ 逻辑优化)
+# 网页抓取函数 (保持不变)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -152,7 +159,6 @@ def scrape_card_data(url):
         response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # 1. 尝试从标题标签中获取卡牌全名
         name_tag = soup.find(['h1', 'h2'], class_=re.compile(r'heading|title', re.I))
         full_title = name_tag.get_text(strip=True) if name_tag else ""
         
@@ -170,7 +176,7 @@ def scrape_card_data(url):
             collection_text = collection_tag.get_text(strip=True)
             
             # 使用更精确的正则表达式：匹配 ≪収録≫ 之后直到 TCG 常见的 【代码】 格式为止
-            # 捕获组 (2) 匹配例如 'ブースターパック 謀略の王国【OP-04】' 这样的完整系列名
+            # (\w+[\s\w]+?【[A-Z0-9\-\_]+?\】) 捕获例如 'ブースターパック 謀略の王国【OP-04】' 这样的完整系列名
             set_match = re.search(r'≪収録≫\s*(.*?)(\w+[\s\w]+?【[A-Z0-9\-\_]+?\】)', collection_text, re.DOTALL)
             
             if set_match:
@@ -179,6 +185,7 @@ def scrape_card_data(url):
                 is_collection_found = True
             else:
                 # 备用逻辑：如果不存在 【代码】 格式，则非贪婪匹配到下一个大分隔符
+                # 这应该只在没有编码格式时使用，但为了安全保留
                 set_match_fallback = re.search(r'≪収録≫\s*(.+?)(?:\s*。|\s*、|\s*<|$)|\s+(.+?)(?:\s*。|\s*、|\s*<|$)', collection_text, re.DOTALL)
                 if set_match_fallback:
                     card_set = (set_match_fallback.group(1) or set_match_fallback.group(2)).strip()
@@ -190,9 +197,7 @@ def scrape_card_data(url):
                 card_set = re.sub(r'[\]）」』]$', '', card_set).strip()
 
         # -----------------------------------------------------------------
-        
-        # --- 2. 提取 rarity, color, card_number (这些信息不受 card_set 提取方式影响) ---
-        
+
         # 2a. 提取 rarity
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
@@ -214,7 +219,7 @@ def scrape_card_data(url):
         else:
             temp_title_without_number = temp_title
         
-        # --- 3. 提取 card_name 和备用 card_set ---
+        # 3. 提取 card_name 和备用 card_set
         
         if not is_collection_found:
             # 如果 ≪収録≫ 提取失败 (card_set 仍为空), 则使用旧的逻辑从剩余标题中提取 card_name 和 card_set
@@ -230,6 +235,7 @@ def scrape_card_data(url):
         else:
              # 如果 card_set 已经被 ≪収録≫ 确定，则只从剩余文本中提取 card_name
             card_name = temp_title_without_number.strip()
+
         
         # --- 4. 提取图片链接 ---
         image_url = None
@@ -316,7 +322,12 @@ with st.sidebar:
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
         
-        date_in = st.date_input("8. 录入日期", datetime.now(), key=f"date_in_form_{suffix}")
+        # 【关键修改】：使用 session state 变量作为 value，保留上一次的选择
+        date_in = st.date_input(
+            "8. 录入日期", 
+            value=st.session_state['last_entry_date'], # 使用 Session State 中保存的值
+            key=f"date_in_form_{suffix}"
+        )
 
         st.divider()
         st.write("🖼️ 卡牌图片 (可修正)")
@@ -336,13 +347,17 @@ with st.sidebar:
     if submitted:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
+                # date_in 是用户在本次提交中选择的值
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
+            
+            # 【核心修改】：提交成功后，将本次用户选择的日期 date_in 存入 session state
+            st.session_state['last_entry_date'] = date_in
             
             # 清除侧边栏输入状态
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # 【关键修改 2】：设置成功状态和卡牌名，用于强制页面返回顶部
+            # 【关键修改 2】：设置成功状态和卡牌名
             st.session_state['submission_successful'] = True
             st.session_state['submitted_card_name'] = name_in
             
