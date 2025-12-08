@@ -7,6 +7,7 @@ import re
 import gspread 
 import gspread_dataframe as gd
 import numpy as np 
+import time # <<< 新增: 用于在写入 Google Sheets 后等待，确保操作完成
 
 # === 配置 ===
 SHEET_NAME = "数据表" 
@@ -117,6 +118,8 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
+        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
+
         st.cache_data.clear()
         st.cache_resource.clear()
         
@@ -132,7 +135,8 @@ def delete_card(card_id):
     
     try:
         worksheet = sh.worksheet(SHEET_NAME)
-        df = load_data()
+        # 注意: load_data() 此时仍可能从缓存中读取旧数据
+        df = load_data() 
         
         # 过滤掉要删除的行
         df_updated = df[df['id'] != card_id]
@@ -140,9 +144,11 @@ def delete_card(card_id):
         # 确保只保留 NEW_EXPECTED_COLUMNS
         df_final = df_updated[NEW_EXPECTED_COLUMNS].replace({None: ''}) # 转换 None 为空字符串以写入 Sheets
         
-        # 覆盖工作表
+        # 覆盖工作表 (这是实际删除操作)
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
+        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
+
         st.cache_data.clear()
         st.cache_resource.clear()
         st.success(f"ID {card_id} 记录已删除！正在刷新页面...")
@@ -170,6 +176,8 @@ def update_data_and_save(edited_df):
         
         # 覆盖工作表
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
+        
+        time.sleep(0.5) # <<< 修正 1: 等待 Google Sheets 写入完成
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -280,7 +288,6 @@ if 'form_key_suffix' not in st.session_state:
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
-    # st.session_state['scrape_url_input'] = "" # 这一行是错误的根源，已通过动态 key 解决
     st.session_state['form_key_suffix'] += 1 
     
 # === 界面布局 ===
@@ -293,7 +300,7 @@ suffix = str(st.session_state['form_key_suffix'])
 with st.sidebar:
     st.header("🌐 网页自动填充")
     
-    # ⬇️ 修正 1: 将 URL input 的 key 设为动态，解决 StreamlitAPIException
+    # URL input 的 key 设为动态，确保能被 suffix 重置
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
@@ -361,8 +368,6 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
-            # ⬇️ 修正 2: 删除导致 StreamlitAPIException 的代码行，清除功能通过 suffix 递增实现
-            # st.session_state['scrape_url_input'] = "" # <-- 错误行已删除
             st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空所有表单
             
             st.success(f"已录入: {name_in}")
