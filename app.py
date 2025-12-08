@@ -280,17 +280,21 @@ if 'form_key_suffix' not in st.session_state:
     
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
-    st.session_state['scrape_url_input'] = ""
+    # st.session_state['scrape_url_input'] = "" # 这一行是错误的根源，已通过动态 key 解决
     st.session_state['form_key_suffix'] += 1 
     
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
 
+# 获取动态 key suffix (用于在提交/清除后重置所有 input 控件)
+suffix = str(st.session_state['form_key_suffix'])
+
 # --- 侧边栏：录入 ---
 with st.sidebar:
     st.header("🌐 网页自动填充")
     
-    scrape_url = st.text_input("输入卡牌详情页网址:", key='scrape_url_input') 
+    # ⬇️ 修正 1: 将 URL input 的 key 设为动态，解决 StreamlitAPIException
+    scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
     
@@ -309,7 +313,7 @@ with st.sidebar:
                 st.rerun()
                  
     with col_clear_btn:
-        # 修复：确保清除操作也能触发页面刷新，以重置 input 控件
+        # 确保清除操作也能触发页面刷新，以重置 input 控件
         if st.button("一键清除录入内容", type="primary"):
             clear_all_data()
             st.rerun() 
@@ -326,8 +330,6 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    # 获取动态 key suffix (用于在提交后清除表单内容)
-    suffix = str(st.session_state['form_key_suffix'])
 
     # 录入字段 - 使用动态 key 来确保提交后清空/更新
     card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
@@ -359,8 +361,9 @@ with st.sidebar:
             add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
-            st.session_state['scrape_url_input'] = "" # 清除 URL 输入内容
-            st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空表单
+            # ⬇️ 修正 2: 删除导致 StreamlitAPIException 的代码行，清除功能通过 suffix 递增实现
+            # st.session_state['scrape_url_input'] = "" # <-- 错误行已删除
+            st.session_state['form_key_suffix'] += 1 # 递增 suffix 强制清空所有表单
             
             st.success(f"已录入: {name_in}")
             st.rerun() # 强制刷新 (并自动返回最上方)
@@ -418,7 +421,7 @@ else:
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore').copy()
 
-    # ⬇️ 核心修复 1: 确保日期列是 Python date 对象，以避免 st.data_editor 无限循环
+    # 核心修正：确保日期列是 Python date 对象，以避免 st.data_editor 无限循环
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     st.markdown("### 📝 数据编辑（双击单元格修改）") 
@@ -569,7 +572,7 @@ else:
         with col_chart:
             st.caption("价格走势图")
             if len(target_df) > 1:
-                # ⬇️ 修正 2: 使用 date_dt (Datetime 对象) 作为 X 轴，确保图表正确绘制时间序列
+                # 使用 date_dt (Datetime 对象) 作为 X 轴，确保图表正确绘制时间序列
                 st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
