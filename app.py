@@ -139,7 +139,7 @@ def update_data_and_save(edited_df):
         st.error(f"保存修改失败。错误: {e}")
 
 
-# 网页抓取函数 (保持不变)
+# 网页抓取函数 (包含 ≪収録≫ 逻辑)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -152,6 +152,7 @@ def scrape_card_data(url):
         response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.content, 'html.parser')
 
+        # 1. 尝试从标题标签中获取卡牌全名
         name_tag = soup.find(['h1', 'h2'], class_=re.compile(r'heading|title', re.I))
         full_title = name_tag.get_text(strip=True) if name_tag else ""
         
@@ -161,19 +162,34 @@ def scrape_card_data(url):
         card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
         temp_title = full_title 
 
-        # 1. 提取 rarity
+        # --- 【新的抓取逻辑】提取 ≪収録≫ 后面的系列信息 (优先级最高) ---
+        # 查找包含 '≪収録≫' 的任何标签的文本内容
+        collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
+        if collection_tag:
+            collection_text = collection_tag.get_text(strip=True)
+            # 匹配 ≪収録≫ 后的所有内容
+            set_match = re.search(r'≪収録≫(.+)', collection_text)
+            if set_match:
+                card_set = set_match.group(1).strip()
+                # 清理系列名中可能存在的方括号等
+                card_set = re.sub(r'[【】\[\]『』]', '', card_set).strip()
+        # -----------------------------------------------------------------
+        
+        # --- 2. 提取 rarity, color, card_number (这些信息不受 card_set 提取方式影响) ---
+        
+        # 2a. 提取 rarity
         rarity_match = re.search(r'【(.+?)】', temp_title)
         if rarity_match:
             rarity = rarity_match.group(1).strip()
             temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
         
-        # 2. 提取 color
+        # 2b. 提取 color
         color_match = re.search(r'《(.+?)》', temp_title)
         if color_match:
             color = color_match.group(1).strip()
             temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
-        # 3. 提取 card_number
+        # 2c. 提取 card_number
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
         
         if number_match:
@@ -182,18 +198,24 @@ def scrape_card_data(url):
         else:
             temp_title_without_number = temp_title
         
-        # 4. 提取 card_set 和 card_name
-        name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
-        if name_part:
-            card_name = name_part.group(1).strip()
-            card_set = temp_title_without_number[len(name_part.group(0)):].strip()
-        else:
-            card_name = temp_title_without_number.strip()
-            card_set = ""
-            
-        card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
+        # --- 3. 提取 card_name 和备用 card_set ---
         
-        # --- 5. 提取图片链接 ---
+        if not card_set:
+            # 如果 ≪収録≫ 提取失败 (card_set 仍为空), 则使用旧的逻辑从剩余标题中提取 card_name 和 card_set
+            name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
+            if name_part:
+                card_name = name_part.group(1).strip()
+                card_set = temp_title_without_number[len(name_part.group(0)):].strip()
+            else:
+                card_name = temp_title_without_number.strip()
+                card_set = "" # 确保 card_set 在没有匹配时清空
+            
+            card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
+        else:
+             # 如果 card_set 已经被 ≪収録≫ 确定，则只从剩余文本中提取 card_name
+            card_name = temp_title_without_number.strip()
+        
+        # --- 4. 提取图片链接 ---
         image_url = None
         
         og_image_tag = soup.find('meta', property='og:image')
@@ -227,6 +249,15 @@ suffix = str(st.session_state['form_key_suffix'])
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
+    
+    # --- 新增侧边栏滚动修复逻辑 ---
+    if st.session_state.get('submission_successful'):
+        card_name = st.session_state.get('submitted_card_name', '一张卡牌')
+        # 在侧边栏顶部显示一个瞬时的成功消息。
+        # 此新元素将尝试强制 Streamlit 重新计算并滚动侧边栏到顶部。
+        st.success(f"✅ **{card_name}** 录入成功！") 
+    # ---------------------------------
+    
     st.header("🌐 网页自动填充")
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
@@ -297,7 +328,7 @@ with st.sidebar:
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # 【关键修改 2】：设置成功状态和卡牌名
+            # 【关键修改 2】：设置成功状态和卡牌名，用于强制页面返回顶部
             st.session_state['submission_successful'] = True
             st.session_state['submitted_card_name'] = name_in
             
@@ -314,7 +345,7 @@ if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
     # 显示成功消息，该消息将成为页面顶部的新元素
     st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
-    # 清除状态，防止在后续操作中反复显示
+    # 清除状态，防止在后续操作中反复显示，注意：清除动作必须在这里执行
     st.session_state['submission_successful'] = False
     st.session_state['submitted_card_name'] = ""
 
