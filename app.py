@@ -4,14 +4,14 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import re 
-import gspread 
-import gspread_dataframe as gd
 import numpy as np 
-import time # 保持导入，尽管在最终代码中未使用
+import os # 导入 os 库用于文件操作
 
 # === 配置 ===
-SHEET_NAME = "数据表" 
-# 定义 Google Sheets 字段顺序
+# 将 Google Sheets 依赖更换为本地 CSV 文件
+DATA_FILE = "card_data.csv" 
+SHEET_NAME = "数据表" # 仅作为遗留标记，不再使用
+# 定义字段顺序
 NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
 
 # --- Streamlit Session State ---
@@ -32,54 +32,29 @@ def normalize_text_for_fuzzy_search(text):
     cleaned = str(text).replace('-', '').replace(' ', '')
     return cleaned.upper()
 
-# === Gspread 数据库函数 ===
+# === 本地 CSV 数据库函数 ===
 
-@st.cache_resource(ttl=None)
-def connect_gspread():
-    """使用 Streamlit Secrets 凭证连接到 Google Sheets API (缓存连接对象)"""
-    try:
-        creds = {
-            "type": st.secrets["gsheets"]["type"],
-            "project_id": st.secrets["gsheets"]["project_id"],
-            "private_key_id": st.secrets["gsheets"]["private_key_id"],
-            "private_key": st.secrets["gsheets"]["private_key"],
-            "client_email": st.secrets["gsheets"]["client_email"],
-            "client_id": st.secrets["gsheets"]["client_id"],
-            "auth_uri": st.secrets["gsheets"]["auth_uri"],
-            "token_uri": st.secrets["gsheets"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["gsheets"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["gsheets"]["client_x509_cert_url"],
-            "universe_domain": st.secrets["gsheets"]["universe_domain"]
-        }
-        
-        gc = gspread.service_account_from_dict(creds)
-        spreadsheet_url = st.secrets["gsheets"]["spreadsheet_url"]
-        
-        # 兼容性处理：去除 URL 中的 gid 参数
-        base_url = spreadsheet_url.split('/edit')[0] 
-        sh = gc.open_by_url(base_url)
-        
-        return sh
-    except Exception as e:
-        st.error(f"无法连接 Google Sheets API。请检查 Secrets 格式、权限及 URL。错误: {e}")
-        return None
+def ensure_data_file_exists():
+    """确保本地 CSV 文件存在，如果不存在则创建一个空文件并带上列头"""
+    if not os.path.exists(DATA_FILE):
+        # 首次运行时创建空文件
+        st.info(f"数据文件 '{DATA_FILE}' 不存在，正在创建...")
+        empty_df = pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
+        # 使用 utf-8-sig 编码兼容 Excel 写入
+        empty_df.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
 
-# 🔑 关键：移除 @st.cache_data 装饰器，强制每次脚本运行时都读取最新数据
 def load_data():
-    """从 Google Sheets 读取所有数据 (无缓存，即时读取)"""
-    sh = connect_gspread()
-    if not sh:
-        return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
+    """从本地 CSV 文件读取所有数据 (强制读取最新文件)"""
+    ensure_data_file_exists()
     
     try:
-        worksheet = sh.worksheet(SHEET_NAME) 
-        df = gd.get_as_dataframe(worksheet)
+        # 使用 utf-8-sig 编码兼容 Excel 读取
+        df = pd.read_csv(DATA_FILE, encoding='utf-8-sig')
         
         if df.empty or not all(col in df.columns for col in NEW_EXPECTED_COLUMNS):
-            # 尝试修复空表时的列头问题
             if df.empty:
                 return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
-            st.warning("Google Sheets 列头结构与代码预期不符。")
+            st.warning("数据文件列头结构与代码预期不符。已使用空 DataFrame。")
             return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
         # 数据清洗和 ID 确保
@@ -97,98 +72,85 @@ def load_data():
         # 根据 ID 降序排序，确保最新记录在顶部
         return df.sort_values(by='id', ascending=False)
     except Exception as e:
-        st.error(f"无法读取工作表 '{SHEET_NAME}'。错误: {e}")
+        st.error(f"无法读取数据文件 '{DATA_FILE}'。错误: {e}")
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
+
+def save_data(df_to_save):
+    """保存 DataFrame 到本地 CSV 文件"""
+    try:
+        # 确保列顺序并处理缺失值
+        df_final = df_to_save[NEW_EXPECTED_COLUMNS].fillna('')
+        # 使用 utf-8-sig 编码兼容 Excel 写入
+        df_final.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
+        return True
+    except Exception as e:
+        st.error(f"保存数据到 CSV 文件失败。错误: {e}")
+        return False
+
 
 # 新增/追加卡牌
 def add_card(name, number, card_set, price, quantity, rarity, color, date, image_url=None):
-    sh = connect_gspread()
-    if not sh: return
+    # load_data() 强制读取最新数据
+    df = load_data()
     
     try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        
-        # 为了获取正确的 max_id，我们必须读取最新数据。
-        df = load_data() 
-        
-        try:
-            max_id = pd.to_numeric(df['id'], errors='coerce').max()
-            new_id = int(max_id + 1) if pd.notna(max_id) else 1
-        except:
-            new_id = 1
-        
-        # 准备要追加的行数据 (必须与 NEW_EXPECTED_COLUMNS 顺序一致)
-        new_row = [
-            new_id, 
-            date.strftime('%Y-%m-%d'),
-            number, 
-            name, 
-            card_set, 
-            price, 
-            quantity, 
-            rarity,       
-            color,        
-            image_url if image_url else ""
-        ]
-        
-        worksheet.append_row(new_row, value_input_option='USER_ENTERED')
-        
-    except Exception as e:
-        st.error(f"追加数据到 Sheets 失败。错误: {e}")
-
+        max_id = pd.to_numeric(df['id'], errors='coerce').max()
+        new_id = int(max_id + 1) if pd.notna(max_id) else 1
+    except:
+        new_id = 1
+    
+    # 准备要追加的行数据 (作为 DataFrame 的一行)
+    new_row_data = {
+        'id': new_id,
+        'date': date.strftime('%Y-%m-%d'),
+        'card_number': number,
+        'card_name': name,
+        'card_set': card_set,
+        'price': price,
+        'quantity': quantity,
+        'rarity': rarity,
+        'color': color,
+        'image_url': image_url if image_url else ""
+    }
+    
+    new_row_df = pd.DataFrame([new_row_data], columns=NEW_EXPECTED_COLUMNS)
+    
+    # 合并新数据
+    df_updated = pd.concat([df, new_row_df], ignore_index=True)
+    
+    # 保存数据
+    if save_data(df_updated):
+        st.success(f"已录入: {name}")
+        st.session_state['scrape_result'] = {}
+        st.rerun() 
+    
 # 删除卡牌函数
 def delete_card(card_id):
-    sh = connect_gspread()
-    if not sh: 
-        st.error("无法连接 Google Sheets。")
-        return
+    df = load_data()
     
-    try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        # 强制读取最新数据
-        df = load_data() 
-        
-        # 过滤掉要删除的行
-        df_updated = df[df['id'] != card_id]
-        
-        # 确保只保留 NEW_EXPECTED_COLUMNS
-        df_final = df_updated[NEW_EXPECTED_COLUMNS].replace({None: ''}) 
-        
-        # 覆盖工作表
-        gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
-        
+    # 过滤掉要删除的行
+    df_updated = df[df['id'] != card_id]
+    
+    # 保存数据
+    if save_data(df_updated):
         st.success(f"ID {card_id} 记录已删除！正在刷新页面...")
         st.rerun() 
         
-    except Exception as e:
-        st.error(f"删除数据失败。错误: {e}")
-        
-# 处理数据编辑器的内容并保存到 Google Sheets
+# 处理数据编辑器的内容并保存到本地 CSV
 def update_data_and_save(edited_df):
-    sh = connect_gspread()
-    if not sh: return
     
-    try:
-        worksheet = sh.worksheet(SHEET_NAME)
-        
-        # 数据类型清理和格式化
-        edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
-        edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
-        edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
-        edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
-        
-        # 确保列顺序并处理缺失值
-        df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
-        
-        # 覆盖工作表
-        gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
-        
-        st.success("数据修改已自动保存到 Google 表格！")
-    except Exception as e:
-        st.error(f"保存修改失败。错误: {e}")
+    # 数据类型清理和格式化
+    edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+    edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
+    edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
+    edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
+    
+    # 保存数据
+    if save_data(edited_df):
+        st.success("数据修改已自动保存到本地文件！")
 
 
-# 网页抓取函数 
+# 网页抓取函数 (保持不变)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -279,7 +241,6 @@ st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout=
 with st.sidebar:
     st.header("🌐 网页自动填充")
     
-    # 将 key 移动到 session state 之外以避免冲突
     scrape_url = st.text_input("输入卡牌详情页网址:", key='scrape_url_input') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
@@ -296,7 +257,6 @@ with st.sidebar:
                     st.success("数据抓取完成。")
                  
     with col_clear_btn:
-        # 使用 on_click 触发函数
         st.button("一键清除录入内容", type="primary", on_click=clear_all_data)
 
     st.divider()
@@ -305,7 +265,8 @@ with st.sidebar:
     # 预填充抓取结果
     res = st.session_state['scrape_result']
     name_default = res.get('card_name', "")
-    number_default = res.get('card_number', "")
+    # 修正：将卡牌编号的默认值设为抓取的编号
+    number_default = res.get('card_number', "") 
     set_default = res.get('card_set', "")
     rarity_default = res.get('card_rarity', "") 
     color_default = res.get('card_color', "") 
@@ -314,7 +275,8 @@ with st.sidebar:
     # 🔑 使用 st.form 确保输入字段状态和提交操作的原子性
     with st.form(key="manual_entry_form"):
         # 录入字段
-        card_number_in = st.text_input("1. 卡牌编号", value=number_default, key="card_number_in")
+        # 修正：使用 number_default 作为卡牌编号的默认值
+        card_number_in = st.text_input("1. 卡牌编号", value=number_default, key="card_number_in") 
         name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key="name_in")
         set_in = st.text_input("3. 系列/版本", value=set_default, key="set_in") 
         rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key="rarity_in") 
@@ -343,19 +305,19 @@ with st.sidebar:
     if submitted:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
+                # 调用新的 add_card (包含保存逻辑)
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
-            st.session_state['scrape_result'] = {}
-            st.success(f"已录入: {name_in}")
-            # 强制重新执行脚本
-            st.rerun()
+            # 由于 add_card 内部已经有 st.success 和 st.rerun，这里可以省略，但为保险保持代码结构。
+            # st.success(f"已录入: {name_in}")
+            # st.rerun() 
         else:
             st.error("卡牌名称不能为空！")
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 🔑 每次脚本运行时都会执行，并从 Google Sheets 读取最新数据
+# 🔑 每次脚本运行时都会执行，并从本地 CSV 文件读取最新数据
 df = load_data()
 
 if df.empty:
@@ -443,6 +405,7 @@ else:
         final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
+            # 调用新的 update_data_and_save (包含保存逻辑)
             update_data_and_save(final_df_to_save)
             st.rerun()
 
@@ -474,6 +437,7 @@ else:
                  st.markdown("<br>", unsafe_allow_html=True)
                  if st.button("🔴 确认删除所选记录", type="secondary"):
                      if card_id_to_delete:
+                         # 调用新的 delete_card (包含保存逻辑)
                          delete_card(card_id_to_delete)
                      else:
                          st.error("无法识别要删除的记录 ID。")
@@ -546,18 +510,18 @@ else:
                 st.info("需至少两条记录绘制走势")
 
     # =========================================================================
-    # 🔑 移动到最底部：数据导出功能
+    # 📥 数据导出功能 (保持在最底部)
     # =========================================================================
     st.divider()
     st.markdown("### 📥 数据导出 (用于备份或迁移)")
     
-    # 确保使用完整的 DataFrame df 进行导出，而不是筛选后的 filtered_df
     if not df.empty:
+        # 使用 utf-8-sig 编码兼容 Excel
         csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(
             label="下载完整的卡牌数据 (CSV)",
             data=csv_data,
             file_name='card_data_full_export.csv',
             mime='text/csv',
-            help="点击下载 Google 表格中的所有数据，用于备份。"
+            help="点击下载所有数据，强烈建议定期备份！"
         )
