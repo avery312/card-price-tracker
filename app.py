@@ -7,7 +7,7 @@ import re
 import gspread 
 import gspread_dataframe as gd
 import numpy as np 
-import time # <<< 新增/恢复：用于在写入 Google Sheets 后强制等待
+import time # <<< 关键：用于在写入 Google Sheets 后强制等待
 
 # === 配置 ===
 SHEET_NAME = "数据表" 
@@ -17,14 +17,17 @@ NEW_EXPECTED_COLUMNS = ['id', 'date', 'card_number', 'card_name', 'card_set', 'p
 # --- Streamlit Session State ---
 if 'scrape_result' not in st.session_state:
     st.session_state['scrape_result'] = {}
-# 由于没有动态 key，我们使用一个简单的 session state 标记来尝试重置表单
+# 用于重置侧边栏表单的 Key
 if 'form_key_suffix' not in st.session_state: 
     st.session_state['form_key_suffix'] = 0
+# <<< 关键：用于强制刷新主页数据缓存的版本号
+if 'data_version' not in st.session_state:
+    st.session_state['data_version'] = 0
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
-    # 尝试更新 suffix 来刷新表单
     st.session_state['form_key_suffix'] += 1 
+    # 注意：这里不增加 data_version，因为数据本身没有变化
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -69,9 +72,10 @@ def connect_gspread():
         st.error(f"无法连接 Google Sheets API。请检查 Secrets 格式、权限及 URL。错误: {e}")
         return None
 
+# <<< 关键：load_data 函数现在使用 data_version 作为缓存键
 @st.cache_data(ttl=3600)
-def load_data(suffix):
-    """从 Google Sheets 读取所有数据，使用 suffix 强制刷新缓存"""
+def load_data(data_version):
+    """从 Google Sheets 读取所有数据，使用 data_version 强制刷新缓存"""
     sh = connect_gspread()
     if not sh:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -85,7 +89,7 @@ def load_data(suffix):
             return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
 
         # 数据清洗和 ID 确保
-        df = df.replace({np.nan: None}) # 将 NaN 替换为 None，便于后续处理
+        df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         if df['id'].duplicated().any() or (df['id'] == 0).any():
              df['id'] = range(1, len(df) + 1)
@@ -105,8 +109,8 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     
     try:
         worksheet = sh.worksheet(SHEET_NAME)
-        # load_data 函数现在需要一个参数
-        df = load_data(st.session_state['form_key_suffix']) 
+        # load_data 函数现在需要 data_version 参数
+        df = load_data(st.session_state['data_version']) 
         
         try:
             max_id = pd.to_numeric(df['id'], errors='coerce').max()
@@ -130,10 +134,12 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
-        time.sleep(5.0) # <<< 关键修复：确保 Google Sheets 写入完成
+        time.sleep(2.0) # <<< 关键修复：缩短至 2.0 秒
 
+        # 清除缓存并递增版本号，强制下一次 load_data 读取最新数据
         st.cache_data.clear()
         st.cache_resource.clear()
+        st.session_state['data_version'] += 1 
         
     except Exception as e:
         st.error(f"追加数据到 Sheets 失败。错误: {e}")
@@ -147,29 +153,29 @@ def update_data_and_save(edited_df):
         worksheet = sh.worksheet(SHEET_NAME)
         
         # 数据类型清理和格式化
-        # 确保 date 列处理为字符串，以便 gspread_dataframe 正确写入
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
-        # 确保列顺序并处理缺失值
         # edited_df 已经排除了被删除的行
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         
-        # 覆盖工作表
+        # 覆盖工作表 (这包含了 data_editor 中的所有修改和删除操作)
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
-        time.sleep(5.0) # <<< 关键修复：确保 Google Sheets 写入完成
+        time.sleep(2.0) # <<< 关键修复：缩短至 2.0 秒
 
+        # 清除缓存并递增版本号，强制下一次 load_data 读取最新数据
         st.cache_data.clear()
         st.cache_resource.clear()
+        st.session_state['data_version'] += 1 
         st.success("数据修改已自动保存到 Google 表格！")
     except Exception as e:
         st.error(f"保存修改失败。错误: {e}")
 
 
-# 网页抓取函数 
+# 网页抓取函数 (保持不变)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -262,7 +268,6 @@ suffix = str(st.session_state['form_key_suffix']) # 用于生成动态 key
 with st.sidebar:
     st.header("🌐 网页自动填充")
     
-    # 使用动态 key 来确保清空操作可以重置输入框
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
@@ -278,17 +283,16 @@ with st.sidebar:
                 else:
                     st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
-                st.rerun() # 强制刷新以更新表单
+                st.rerun() 
                  
     with col_clear_btn:
         if st.button("一键清除录入内容", type="primary", key=f"clear_btn_{suffix}"):
             clear_all_data()
-            st.rerun() # 强制刷新以清空表单
+            st.rerun() 
 
     st.divider()
     st.header("📝 手动录入/修正")
     
-    # 预填充抓取结果
     res = st.session_state['scrape_result']
     name_default = res.get('card_name', "")
     number_default = res.get('card_number', "")
@@ -297,7 +301,6 @@ with st.sidebar:
     color_default = res.get('card_color', "") 
     img_url_default = res.get('image_url', "")
 
-    # 录入字段
     card_number_in = st.text_input("1. 卡牌编号", value=number_default, key=f"card_number_in_{suffix}")
     name_in = st.text_input("2. 卡牌名称 (必填)", value=name_default, key=f"name_in_{suffix}")
     set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_{suffix}") 
@@ -323,8 +326,8 @@ with st.sidebar:
 
     if st.button("提交录入", type="primary", key=f"submit_btn_{suffix}"):
         if name_in:
-            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、5.0秒お待ちください..."):
-                # 顺序: name, number, set, price, quantity, rarity, color, date, image_url
+            # <<< 关键：显示 2.0 秒的等待信息
+            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、2.0秒お待ちください..."):
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
             st.session_state['scrape_result'] = {}
@@ -337,7 +340,8 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-df = load_data(st.session_state['form_key_suffix']) # 使用 suffix 强制缓存刷新
+# <<< 关键：使用 data_version 作为缓存键
+df = load_data(st.session_state['data_version']) 
 
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
@@ -347,8 +351,8 @@ else:
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
     df['color'] = df['color'].fillna('') 
-    df['card_set'] = df['card_set'].fillna('') # 确保系列不为 NaN
-    df['card_number'] = df['card_number'].fillna('') # 确保编号不为 NaN
+    df['card_set'] = df['card_set'].fillna('') 
+    df['card_number'] = df['card_number'].fillna('') 
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     df = df.dropna(subset=['date_dt']) 
     
@@ -362,19 +366,13 @@ else:
     # 筛选逻辑
     filtered_df = df.copy()
     if search_name:
-        # 1. 清理搜索输入
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
-        
-        # 2. 对需要搜索的字段进行清理和连接
         search_target = (
             filtered_df['card_name'].astype(str).apply(normalize_text_for_fuzzy_search) + 
             filtered_df['card_number'].astype(str).apply(normalize_text_for_fuzzy_search) + 
             filtered_df['id'].astype(str).apply(normalize_text_for_fuzzy_search)
         )
-        
-        # 3. 执行模糊搜索 (在清理后的文本中搜索清理后的关键词)
         search_condition = search_target.str.contains(cleaned_search_name, case=False, na=False)
-        
         filtered_df = filtered_df[search_condition]
         
     if search_set:
@@ -385,19 +383,16 @@ else:
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 强制将 'date' 列从字符串转换为 date 对象，以避免 st.data_editor 无限循环
+    # 强制将 'date' 列从字符串转换为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
-    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 `Delete` 键。删除后请点击下方的 **保存** 按钮。")
+    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）进行多行删除。删除后请点击下方的 **保存** 按钮。")
     
-    # 定义最终呈现的列顺序
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
-    # 确保 display_df 包含 'id'
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 配置列显示名称和格式 
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True), 
         "date": st.column_config.DateColumn("录入时间"), 
@@ -411,7 +406,6 @@ else:
         "image_url": st.column_config.ImageColumn("卡图", width="small"),
     }
     
-    # 使用 st.data_editor 实现表格编辑功能
     edited_df = st.data_editor(
         display_df,
         key="data_editor",
@@ -419,7 +413,7 @@ else:
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
-        num_rows="dynamic", # <<< 关键：允许用户通过 UI (菜单或 Delete 键) 删除行
+        num_rows="dynamic", # 允许用户删除行
     )
 
     # 检查是否有编辑变动或删除操作
@@ -429,7 +423,8 @@ else:
         final_df_to_save = edited_df
         
         if st.button("💾 确认并保存所有修改", type="primary"):
-            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、5.0秒お待ちください..."):
+            # <<< 关键：显示 2.0 秒的等待信息
+            with st.spinner("🚀 数据保存中... Google Sheets への書き込み完了のため、2.0秒お待ちください..."):
                 update_data_and_save(final_df_to_save)
             st.rerun()
 
@@ -444,17 +439,14 @@ else:
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        # 使用更详细的 unique_label，包含卡名、编号、系列、等级和颜色
         analysis_df['unique_label'] = analysis_df.apply(
             lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
             axis=1
         )
         
-        # 下拉菜单选项 unique_variants 来自 filtered_df，只包含搜索结果。
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         
-        # 使用选定的唯一标签进行筛选
         target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
@@ -477,19 +469,14 @@ else:
                 curr_price = target_df.iloc[-1]['price']
                 total_quantity = target_df['quantity'].sum()
                 
-                # 获取历史最高价及对应日期
                 max_price = target_df['price'].max()
-                # 找到所有匹配最高价的记录，取第一条的日期
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
                 
-                # 获取历史最低价及对应日期
                 min_price = target_df['price'].min()
-                # 找到所有匹配最低价的记录，取第一条的日期
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
 
                 st.metric("最近成交价", f"¥{curr_price:,.0f}")
                 
-                # 展示最高价和最低价的录入日期
                 st.markdown(f"**📈 历史最高**：¥{max_price:,.0f} (于 **{max_price_date}** 录入)")
                 st.markdown(f"**📉 历史最低**：¥{min_price:,.0f} (于 **{min_price_date}** 录入)")
                 
@@ -503,7 +490,6 @@ else:
         with col_chart:
             st.caption("价格走势图")
             if len(target_df) > 1:
-                # 使用 date_dt 列 (datetime 对象) 确保图表正确
                 st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
