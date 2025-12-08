@@ -394,23 +394,24 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
+    # 【核心修改】：所有列增加 width 参数，固定列宽
     column_config_dict = {
-        "id": st.column_config.Column("ID", disabled=True), 
-        "date": st.column_config.DateColumn("录入时间"), 
-        "card_number": "编号",
-        "card_name": "卡名",
-        "card_set": "系列",
-        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d"),
-        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d"),
-        "rarity": "等级", 
-        "color": "颜色",
-        "image_url": st.column_config.ImageColumn("卡图", width="small"),
+        "id": st.column_config.Column("ID", disabled=True, width=50), 
+        "date": st.column_config.DateColumn("录入时间", width=120), 
+        "card_number": st.column_config.Column("编号", width=100),
+        "card_name": st.column_config.Column("卡名", width=250),
+        "card_set": st.column_config.Column("系列", width=150),
+        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=100),
+        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=80),
+        "rarity": st.column_config.Column("等级", width=80), 
+        "color": st.column_config.Column("颜色", width=80), 
+        "image_url": st.column_config.ImageColumn("卡图", width=100),
     }
     
     edited_df = st.data_editor(
         display_df,
         key="data_editor",
-        use_container_width=True, 
+        # 移除 use_container_width=True，以阻止自动调整列宽
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
