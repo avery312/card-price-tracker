@@ -118,7 +118,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         worksheet.append_row(new_row, value_input_option='USER_ENTERED')
         
-        time.sleep(1.5) # <<< 修正：等待 Google Sheets 写入完成，增加到 1.5s
+        time.sleep(2.5) # <<< 最终修正：等待 Google Sheets 写入完成，增加到 2.5s
 
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -146,7 +146,7 @@ def update_data_and_save(edited_df):
         # 覆盖工作表 (这包含了 data_editor 中的所有修改和删除操作)
         gd.set_with_dataframe(worksheet, df_final, row=1, col=1, include_index=False, include_column_header=True)
         
-        time.sleep(1.5) # <<< 修正：等待 Google Sheets 写入完成，增加到 1.5s
+        time.sleep(2.5) # <<< 最终修正：等待 Google Sheets 写入完成，增加到 2.5s
         
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -441,9 +441,8 @@ else:
         if st.button("💾 确认并保存所有修改", type="primary"):
             # 保存逻辑：将 edited_df (已剔除被删除行) 覆盖写入 Sheets
             update_data_and_save(final_df_to_save)
-            st.rerun()
-
-    
+            st.rerun() # 强制刷新
+            
     st.divider()
     
     # --- 📊 单卡深度分析面板 ---
