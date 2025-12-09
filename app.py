@@ -24,14 +24,11 @@ if 'submission_successful' not in st.session_state:
 if 'submitted_card_name' not in st.session_state: 
     st.session_state['submitted_card_name'] = "" 
 
-# 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
-# 【新增】：初始化日期筛选的默认值，用于清除筛选后恢复默认
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
     
-# 【新增】：初始化搜索输入框的默认值
 if 'search_name_input' not in st.session_state:
     st.session_state['search_name_input'] = ""
 if 'search_set_input' not in st.session_state:
@@ -126,31 +123,77 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 处理数据编辑器的内容并保存到 Supabase
-def update_data_and_save(edited_df):
+# 【核心修改】：新的增量保存函数
+def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
+    """
+    根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
+    - displayed_df 是 data_editor 当前显示的 (已筛选的) DataFrame。
+    - editor_state 包含被编辑和被删除的行索引。
+    """
     supabase = connect_supabase()
     if not supabase: return
     
     try:
-        # 1. 数据类型清理和格式化
-        edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
-        edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
-        edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0)
-        edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
-        
-        df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
-        data_to_save = df_final.to_dict('records')
+        # 1. 处理删除操作 (DELETE)
+        deleted_indices = editor_state.get("deleted_rows", [])
+        if deleted_indices:
+            # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
+            ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+            
+            if ids_to_delete:
+                st.info(f"正在删除 {len(ids_to_delete)} 条记录...")
+                # 使用 Supabase 的 `in` 过滤器进行批量删除
+                supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
-        # 2. 核心操作：删除所有旧数据，然后重新插入所有新数据
-        # ❗ 再次强调：这个操作会覆盖整个表，因此 st.data_editor 必须接收全部数据
-        supabase.table(SUPABASE_TABLE_NAME).delete().neq('id', 0).execute() 
+        # 2. 处理修改操作 (UPSERT/UPDATE)
+        edited_rows = editor_state.get("edited_rows", {})
+        if edited_rows:
+            data_to_upsert = []
+            
+            for filtered_index, changes in edited_rows.items():
+                # 获取原始 ID，它是更新记录的唯一标识
+                row_id = displayed_df.iloc[filtered_index]['id']
+                
+                # 从原始显示的行数据开始
+                original_row = displayed_df.iloc[filtered_index].to_dict()
+                
+                # 应用所有修改
+                update_data = {'id': int(row_id)}
+                
+                for col in NEW_EXPECTED_COLUMNS:
+                    if col == 'id':
+                        continue # ID 不变
+                        
+                    value = changes.get(col, original_row.get(col)) # 使用修改后的值，如果没有修改则使用原值
+                    
+                    if col == 'date':
+                        # 确保日期格式为 YYYY-MM-DD
+                        if isinstance(value, datetime) or isinstance(value, pd.Timestamp):
+                            update_data[col] = value.strftime('%Y-%m-%d')
+                        elif isinstance(value, datetime.date): # st.date_input 返回 date object
+                            update_data[col] = value.strftime('%Y-%m-%d')
+                        elif isinstance(value, str):
+                            update_data[col] = value
+                        else:
+                            update_data[col] = None 
+                    elif col in ['price']:
+                        update_data[col] = float(value) if pd.notna(value) else 0.0
+                    elif col in ['quantity']:
+                        update_data[col] = int(value) if pd.notna(value) else 0
+                    else:
+                        update_data[col] = str(value) if pd.notna(value) else ""
+                        
+                data_to_upsert.append(update_data)
+            
+            if data_to_upsert:
+                st.info(f"正在更新 {len(data_to_upsert)} 条记录...")
+                # Supabase UPSERT (根据主键 'id' 自动更新或插入)
+                supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
-        if data_to_save:
-            supabase.table(SUPABASE_TABLE_NAME).insert(data_to_save).execute()
-        
         st.success("数据修改已即时保存到 Supabase！")
+        
     except Exception as e:
-        st.error(f"保存修改失败。错误: {e}")
+        st.error(f"保存增量修改失败。错误: {e}")
 
 
 # 网页抓取函数 (保持不变)
@@ -348,13 +391,10 @@ else:
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
     
     with col_s1: 
-        # 绑定 session state，以便被清空按钮控制
         search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
     with col_s2: 
-        # 绑定 session state
         search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
     with col_s3: 
-        # 绑定 session state
         date_range = st.date_input(
             "搜索 时间范围", 
             value=st.session_state.get("date_range_input", []), 
@@ -367,11 +407,8 @@ else:
         if st.button("清空筛选", key="clear_filters_btn", use_container_width=True):
             clear_search_filters() 
 
-    # --- 筛选逻辑 (用于分析和提示) ---
-    # 使用 full_df 进行筛选，结果赋值给 filtered_df
+    # --- 筛选逻辑 (用于编辑和分析) ---
     filtered_df = df.copy()
-    
-    search_applied = False
     
     if search_name:
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
@@ -382,70 +419,68 @@ else:
         )
         search_condition = search_target.str.contains(cleaned_search_name, case=False, na=False)
         filtered_df = filtered_df[search_condition]
-        search_applied = True
         
     if search_set:
         filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
-        search_applied = True
     if len(date_range) == 2:
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
-        search_applied = True
 
     
-    # --- 📝 数据编辑区域 (核心修复区) ---
+    # --- 📝 数据编辑区域 ---
     
-    st.markdown("### 📝 数据编辑（双击单元格修改、支持多行删除）")
-    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）进行多行删除。删除后请点击下方的 **保存** 按钮。")
+    st.markdown("### 📝 数据编辑（双击单元格修改、仅显示筛选结果）")
+    # 【新安全提示】
+    st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
+    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）。")
     
-    # 【核心修复】：准备用于编辑的完整 DataFrame
-    # 强制使用完整的、未筛选的 df 作为编辑器的输入，防止数据丢失
-    df_full_for_editor = df.drop(columns=['date_dt'], errors='ignore').copy()
-    df_full_for_editor['date'] = pd.to_datetime(df_full_for_editor['date'], errors='coerce').dt.date 
-    df_full_for_editor = df_full_for_editor.sort_values(by='id', ascending=False)
+    # 准备用于展示和编辑的 DataFrame (使用筛选结果)
+    display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    # 确保 data_editor 的 date 列为 date object
+    display_df_for_editor['date'] = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date 
+
+    display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
-    df_full_for_editor = df_full_for_editor[['id'] + FINAL_DISPLAY_COLUMNS]
-
-    # 【新增安全提示】
-    if search_applied:
-        st.warning(f"⚠️ **安全提示：** 您已在上方应用筛选。但出于数据安全考虑，此编辑器现已自动切换为显示**所有 {len(df_full_for_editor)} 条记录**。修改后请点击保存，否则**可能**会导致未修改的数据丢失。")
-    else:
-        st.info(f"ℹ️ **提示**：您当前正在查看和编辑**所有 {len(df_full_for_editor)} 条记录**。")
-
-
-    column_config_dict = {
-        "id": st.column_config.Column("ID", disabled=True, width=50), 
-        "date": st.column_config.DateColumn("录入时间", width=80), 
-        "card_number": st.column_config.Column("编号", width=70),
-        "card_name": st.column_config.Column("卡名", width=200), 
-        "card_set": st.column_config.Column("系列", width=100), 
-        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
-        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
-        "rarity": st.column_config.Column("等级", width=50), 
-        "color": st.column_config.Column("颜色", width=50), 
-        "image_url": st.column_config.ImageColumn("卡图", width=50),
-    }
     
-    edited_df = st.data_editor(
-        df_full_for_editor, # <-- 传递完整的、未筛选的 DataFrame
-        key="data_editor",
-        hide_index=True,
-        column_order=['id'] + FINAL_DISPLAY_COLUMNS,
-        column_config=column_config_dict,
-        num_rows="dynamic",
-    )
+    # 确保 ID 列在最前面
+    display_df_for_editor = display_df_for_editor[['id'] + FINAL_DISPLAY_COLUMNS]
 
-    # 检查是否有编辑变动或删除操作
-    if st.session_state["data_editor"]["edited_rows"] or st.session_state["data_editor"]["deleted_rows"]:
-        st.warning("⚠️ 数据修改或删除操作已检测到。请点击 **保存修改** 按钮！")
+    if display_df_for_editor.empty:
+        st.info("没有找到符合筛选条件的数据可供编辑。")
+    else:
+        column_config_dict = {
+            "id": st.column_config.Column("ID", disabled=True, width=50), 
+            "date": st.column_config.DateColumn("录入时间", width=80), 
+            "card_number": st.column_config.Column("编号", width=70),
+            "card_name": st.column_config.Column("卡名", width=200), 
+            "card_set": st.column_config.Column("系列", width=100), 
+            "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
+            "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
+            "rarity": st.column_config.Column("等级", width=50), 
+            "color": st.column_config.Column("颜色", width=50), 
+            "image_url": st.column_config.ImageColumn("卡图", width=50),
+        }
         
-        final_df_to_save = edited_df
-        
-        if st.button("💾 确认并保存所有修改", type="primary"):
-            with st.spinner("🚀 数据即时保存中..."):
-                # 此处 update_data_and_save 接收的是完整的 edited_df，包含所有数据（即便没有改动）
-                update_data_and_save(final_df_to_save)
-            st.rerun()
+        # 使用筛选后的数据作为输入
+        edited_df = st.data_editor(
+            display_df_for_editor, 
+            key="data_editor",
+            hide_index=True,
+            column_order=['id'] + FINAL_DISPLAY_COLUMNS,
+            column_config=column_config_dict,
+            num_rows="fixed", # 仅允许修改现有行和删除行
+        )
+
+        # 检查是否有编辑变动或删除操作
+        editor_state = st.session_state["data_editor"]
+        if editor_state["edited_rows"] or editor_state["deleted_rows"]:
+            st.warning("⚠️ 数据修改或删除操作已检测到。请点击 **保存修改** 按钮！")
+            
+            if st.button("💾 确认并保存所有修改", type="primary"):
+                with st.spinner("🚀 数据增量保存中..."):
+                    # 调用新的增量保存函数
+                    save_incremental_changes(display_df_for_editor, editor_state)
+                st.rerun()
 
     
     st.divider()
