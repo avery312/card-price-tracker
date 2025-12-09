@@ -177,27 +177,41 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
                 
+                # 获取该行未被编辑的原始日期，作为备用日期
+                original_date_str = displayed_df.iloc[filtered_index]['date']
+                
                 # 遍历所有修改的列及其值
                 for col, value in changes.items():
                     
                     # 数据类型转换和清理
                     if col == 'date':
-                        # 兼容 date 和 datetime 对象，并转换为 Supabase 需要的字符串格式
+                        # === 【关键修正】处理日期非空约束问题 ===
+                        final_date_str = None
+                        
+                        # A. 尝试从编辑后的值转换
                         if isinstance(value, (datetime, pd.Timestamp, date)): 
                             try:
-                                if pd.isna(value):
-                                     update_data[col] = None 
-                                else:
-                                     # 确保日期格式正确
-                                     update_data[col] = value.strftime('%Y-%m-%d')
+                                if pd.notna(value):
+                                     final_date_str = value.strftime('%Y-%m-%d')
                             except Exception:
-                                update_data[col] = None 
-                        elif isinstance(value, str):
-                            update_data[col] = value
-                        elif pd.isna(value) or value is None:
-                            update_data[col] = None
-                        else:
-                            update_data[col] = None
+                                pass # 转换失败，保持 None
+                        elif isinstance(value, str) and value:
+                            final_date_str = value
+                        
+                        # B. 如果编辑后的值仍为空/无效，则回填原始日期
+                        if final_date_str is None and original_date_str:
+                             # original_date_str 已经是 string 或 date 对象
+                             if isinstance(original_date_str, date):
+                                 final_date_str = original_date_str.strftime('%Y-%m-%d')
+                             elif isinstance(original_date_str, str):
+                                 final_date_str = original_date_str
+                        
+                        # C. 如果原始日期也不存在，则使用今天的日期作为最后保险
+                        if final_date_str is None:
+                             final_date_str = datetime.now().strftime('%Y-%m-%d')
+                             
+                        update_data[col] = final_date_str
+                        # === 修正结束 ===
                             
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
@@ -446,8 +460,6 @@ else:
     with col_s3: 
         date_range = st.date_input(
             "搜索 时间范围", 
-            # 使用列表初始化，如果 session state 为空，则 date_input 默认是当前日期，但这会干扰清空操作。
-            # 为了确保清空按钮能生效，我们需要在 session state 中维护状态
             value=st.session_state.get("date_range_input", []), 
             help="请选择开始和结束日期", 
             key="date_range_input"
@@ -455,7 +467,7 @@ else:
     
     with col_s4: 
         st.write(" ") 
-        # 【关键修正】：使用 on_click 回调来清空筛选状态，解决 StreamlitAPIException
+        # 使用 on_click 回调来清空筛选状态
         st.button(
             "清空筛选", 
             key="clear_filters_btn", 
@@ -493,13 +505,14 @@ else:
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 1. 【关键修正】清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
+    # 1. 清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
+    # 这一步是为了让 st.data_editor 能够正确显示 date_column (date对象或None)
     date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
     display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
     
     display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
-    # 2. 【关键修正】强制重置索引：确保索引连续
+    # 2. 强制重置索引：确保索引连续
     display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -527,14 +540,13 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 【最终修正】移除 selection_mode 参数以兼容旧版本 Streamlit
+        # 移除 selection_mode 参数以兼容旧版本 Streamlit
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
-            # selection_mode 默认就是 multi-row，旧版本 Streamlit 不支持此参数
             use_container_width=True 
         )
 
@@ -596,10 +608,11 @@ else:
                 avg_price = target_df['price'].mean()
                 
                 max_price = target_df['price'].max()
-                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
+                # 确保在取日期时，df不是空的，且日期是有效的
+                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0] if not target_df[target_df['price'] == max_price].empty else "N/A"
                 
                 min_price = target_df['price'].min()
-                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
+                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0] if not target_df[target_df['price'] == min_price].empty else "N/A"
 
                 c1, c2 = st.columns(2)
                 c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
