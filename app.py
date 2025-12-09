@@ -1,12 +1,10 @@
 import streamlit as st
 import pandas as pd
-# 明确导入 datetime 和 date 对象
 from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
-# 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
 
@@ -42,18 +40,16 @@ if 'search_set_input' not in st.session_state:
 
 
 def clear_all_data():
-    """清除所有录入相关 Session State。"""
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 def clear_search_filters_action():
-    """清除所有筛选相关的 Session State 变量。"""
     st.session_state["search_name_input"] = ""
     st.session_state["search_set_input"] = ""
     st.session_state["date_range_input"] = [] 
 
-# === 辅助函数：模糊搜索规范化 ===
+# === 辅助函数 ===
 def normalize_text_for_fuzzy_search(text):
     if pd.isna(text):
         return ""
@@ -64,7 +60,6 @@ def normalize_text_for_fuzzy_search(text):
 
 @st.cache_resource(ttl=None)
 def connect_supabase() -> Client:
-    """使用 Streamlit Secrets 凭证连接到 Supabase 数据库"""
     try:
         url: str = st.secrets["supabase"]["URL"]
         key: str = st.secrets["supabase"]["KEY"]
@@ -75,7 +70,6 @@ def connect_supabase() -> Client:
         return None
 
 def load_data():
-    """从 Supabase 读取所有数据"""
     supabase = connect_supabase()
     if not supabase:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
@@ -90,7 +84,6 @@ def load_data():
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
         df = df[NEW_EXPECTED_COLUMNS] 
-
         return df
     except Exception as e:
         st.error(f"无法从 Supabase 读取数据。错误: {e}")
@@ -106,7 +99,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
             max_id = response.data[0]['id']
-            
+        
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
         new_row_data = {
@@ -129,9 +122,6 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
 
 # 增量保存函数
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
-    """
-    增量保存修改到 Supabase
-    """
     supabase = connect_supabase()
     if not supabase: return
     
@@ -159,20 +149,32 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期字符串 (因为 displayed_df['date'] 现在是字符串)
-                original_date_str = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期，防止空值覆盖
+                original_date_obj = displayed_df.iloc[filtered_index]['date']
+                initial_date_str = datetime.now().strftime('%Y-%m-%d')
                 
-                # 设置日期回退值（如果是字符串则直接用，如果是 None 则用今天）
-                if original_date_str:
-                    update_data['date'] = original_date_str
-                else:
-                    update_data['date'] = datetime.now().strftime('%Y-%m-%d')
+                if original_date_obj:
+                    if isinstance(original_date_obj, date):
+                        initial_date_str = original_date_obj.strftime('%Y-%m-%d')
+                    elif isinstance(original_date_obj, str):
+                        initial_date_str = original_date_obj
+                
+                update_data['date'] = initial_date_str
                 
                 for col, value in changes.items():
                     if col == 'date':
-                        # 已经是字符串格式或者 None
+                        final_date_str_edit = None
                         if value:
-                            update_data[col] = value
+                            if isinstance(value, (datetime, pd.Timestamp, date)): 
+                                try:
+                                    final_date_str_edit = value.strftime('%Y-%m-%d')
+                                except: pass 
+                            elif isinstance(value, str):
+                                final_date_str_edit = value
+                        
+                        if final_date_str_edit is not None:
+                            update_data[col] = final_date_str_edit 
+
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -194,7 +196,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     except Exception as e:
         st.session_state['autosave_successful'] = True
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
-
 
 # 网页抓取函数
 def scrape_card_data(url):
@@ -220,12 +221,10 @@ def scrape_card_data(url):
 
         # 抓取逻辑
         collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
-        
         is_collection_found = False
         if collection_tag:
             collection_text = collection_tag.get_text(strip=True)
             set_match = re.search(r'≪収録≫\s*(.*?)(\w+[\s\w]+?【[A-Z0-9\-\_]+?\】)', collection_text, re.DOTALL)
-            
             if set_match:
                 card_set = set_match.group(2).strip()
                 is_collection_found = True
@@ -234,7 +233,6 @@ def scrape_card_data(url):
                 if set_match_fallback:
                     card_set = (set_match_fallback.group(1) or set_match_fallback.group(2)).strip()
                     is_collection_found = True
-
             if is_collection_found:
                 card_set = re.sub(r'^[\[（「『]', '', card_set).strip()
                 card_set = re.sub(r'[\]）」』]$', '', card_set).strip()
@@ -250,7 +248,6 @@ def scrape_card_data(url):
             temp_title = temp_title.replace(color_match.group(0), ' ').strip()
         
         number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
-        
         if number_match:
             card_number = number_match.group(1).strip()
             temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
@@ -280,9 +277,6 @@ def scrape_card_data(url):
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
         
-        if not image_url:
-            st.warning("未能找到图片链接。")
-
         return {
             "card_name": card_name, "card_number": card_number, "card_set": card_set,
             "card_rarity": rarity, "card_color": color, "image_url": image_url, "error": None
@@ -295,7 +289,7 @@ st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout=
 
 suffix = str(st.session_state['form_key_suffix']) 
 
-# --- 侧边栏：录入 ---
+# --- 侧边栏 ---
 with st.sidebar:
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
@@ -305,7 +299,6 @@ with st.sidebar:
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
-    
     with col_scrape_btn:
         if st.button("一键抓取并填充", type="secondary", key=f"scrape_btn_{suffix}"):
             if not scrape_url: st.warning("请输入网址。")
@@ -339,24 +332,15 @@ with st.sidebar:
         color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
-        
-        date_in = st.date_input(
-            "8. 录入日期", 
-            value=st.session_state['last_entry_date'],
-            key=f"date_in_form_{suffix}"
-        )
+        date_in = st.date_input("8. 录入日期", value=st.session_state['last_entry_date'], key=f"date_in_form_{suffix}")
 
         st.divider()
         st.write("🖼️ 卡牌图片 (可修正)")
-
         image_url_input = st.text_input("输入图片网址 (URL)", value=img_url_default, key=f"image_url_input_form_{suffix}")
         final_image_path = image_url_input if image_url_input else None
-        
         if final_image_path:
-            try:
-                st.image(final_image_path, caption="预览", use_container_width=True)
-            except: 
-                st.warning("无法加载该链接的图片。")
+            try: st.image(final_image_path, caption="预览", use_container_width=True)
+            except: st.warning("无法加载该链接的图片。")
 
         submitted = st.form_submit_button("提交录入", type="primary")
 
@@ -364,7 +348,6 @@ with st.sidebar:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
-            
             st.session_state['last_entry_date'] = date_in
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
@@ -409,13 +392,9 @@ else:
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
     
-    with col_s1: 
-        search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
-    with col_s2: 
-        search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
-    with col_s3: 
-        date_range = st.date_input("搜索 时间范围", value=st.session_state.get("date_range_input", []), help="请选择开始和结束日期", key="date_range_input")
-    
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
+    with col_s2: search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
+    with col_s3: date_range = st.date_input("搜索 时间范围", value=st.session_state.get("date_range_input", []), help="请选择开始和结束日期", key="date_range_input")
     with col_s4: 
         st.write(" ") 
         st.button("清空筛选", key="clear_filters_btn", use_container_width=True, on_click=clear_search_filters_action) 
@@ -438,15 +417,18 @@ else:
 
     # --- 📝 数据编辑区域 ---
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
-    st.caption("✨ **自动增量保存**：修改单元格后点击表格外任意处，系统将自动保存。")
-    st.caption("✅ **多行删除**：点击左侧复选框选择行，按 **`Delete`** 键删除。")
+    st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
+    st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
     
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    # 核心修复 1: 使用 filtered_df.copy() 创建编辑用数据，但先不删除 date_dt
+    display_df = filtered_df.copy()
+
+    # 核心修复 2: 确保 date 列是 Python date 对象，这与 st.column_config.DateColumn 兼容
+    display_df['date'] = display_df['date_dt'].dt.date.fillna(datetime.now().date())
     
-    # 💥 【核心修复】：将日期转换为字符串格式，彻底避免 TypeError 和兼容性问题
-    # 使用 YYYY-MM-DD 字符串作为 DateColumn 的输入是最稳定的
-    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d').fillna("")
-    
+    # 核心修复 3: 现在可以安全删除 date_dt 了，因为 date 已经转换好了
+    display_df = display_df.drop(columns=['date_dt'], errors='ignore')
+
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
@@ -460,7 +442,7 @@ else:
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
-            "date": st.column_config.DateColumn("录入时间", width=80, format="YYYY-MM-DD"), # 字符串输入 + 格式化
+            "date": st.column_config.DateColumn("录入时间", width=80), 
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
             "card_set": st.column_config.Column("系列", width=100), 
@@ -477,9 +459,9 @@ else:
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="fixed",
+            num_rows="fixed", 
             selection_mode="multi-row",
-            use_container_width=True 
+            use_container_width=True
         )
 
     editor_state = st.session_state.get("data_editor")
@@ -491,28 +473,24 @@ else:
 
     st.divider()
     st.markdown("### 📊 单卡深度分析")
-    
     analysis_df = filtered_df.copy() 
-
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
-        analysis_df['unique_label'] = analysis_df.apply(
-            lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", 
-            axis=1
-        )
+        analysis_df['unique_label'] = analysis_df.apply(lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", axis=1)
         unique_variants = analysis_df['unique_label'].unique()
         selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
         target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
-        
         with col_img:
-            latest_img = target_df.iloc[-1]['image_url']
+            st.caption("卡牌快照 (最近一笔)")
+            latest_img = target_df.iloc[-1]['image_url'] if not target_df.empty else None
             if latest_img:
-                st.image(latest_img, use_container_width=True) 
+                try: st.image(latest_img, use_container_width=True) 
+                except: st.error("图片加载失败")
             else:
-                st.caption("暂无图片")
+                st.empty(); st.caption("暂无图片")
 
         with col_stat:
             st.caption("价格统计")
@@ -521,9 +499,9 @@ else:
                 total_quantity = target_df['quantity'].sum()
                 avg_price = target_df['price'].mean()
                 max_price = target_df['price'].max()
-                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
+                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0] if not target_df[target_df['price'] == max_price].empty else "N/A"
                 min_price = target_df['price'].min()
-                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
+                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0] if not target_df[target_df['price'] == min_price].empty else "N/A"
 
                 c1, c2 = st.columns(2)
                 c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
@@ -534,6 +512,8 @@ else:
                 c4.metric("📉 历史最低", f"¥{min_price:,.0f}", f"于 {min_price_date} 录入")
                 st.metric("📊 平均价格", f"¥{avg_price:,.2f}")
                 st.caption(f"共 {len(target_df)} 条记录")
+            else:
+                st.info("无数据统计。")
 
         with col_chart:
             st.caption("价格走势图")
@@ -553,4 +533,4 @@ else:
     st.markdown("### 📥 数据导出 (用于备份或迁移)")
     if not df.empty:
         csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button("下载完整的卡牌数据 (CSV)", data=csv_data, file_name='card_data_full_export.csv', mime='text/csv')
+        st.download_button(label="下载完整的卡牌数据 (CSV)", data=csv_data, file_name='card_data_full_export.csv', mime='text/csv')
