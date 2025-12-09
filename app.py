@@ -9,6 +9,8 @@ import numpy as np
 # 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
+# 引入 components 用于执行 JavaScript 滚动
+import streamlit.components.v1 as components
 
 # === 配置 ===
 SUPABASE_TABLE_NAME = "cards" 
@@ -156,7 +158,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             
             if ids_to_delete:
                 deleted_count = len(ids_to_delete)
-                # 使用 Supabase 的 `in` 过滤器进行批量删除
                 supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
         # 2. 处理修改操作 (UPSERT/UPDATE)
@@ -175,15 +176,16 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期对象
-                original_date = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期 (Timestamp 对象)
+                original_date_ts = displayed_df.iloc[filtered_index]['date']
                 
                 # 设置日期回退值
                 initial_date_str = datetime.now().strftime('%Y-%m-%d')
-                
-                # original_date 可能是 date 对象或 None（因为我们已经清洗过）
-                if original_date and isinstance(original_date, date):
-                    initial_date_str = original_date.strftime('%Y-%m-%d')
+                if pd.notna(original_date_ts):
+                    try:
+                        initial_date_str = original_date_ts.strftime('%Y-%m-%d')
+                    except:
+                        pass
                 
                 update_data['date'] = initial_date_str 
                 
@@ -193,12 +195,11 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                         if value:
                             if isinstance(value, str):
                                 final_date_str_edit = value
-                            # 处理 Timestamp 或 datetime 对象
-                            elif isinstance(value, (datetime, pd.Timestamp, date)): 
+                            elif isinstance(value, (datetime, pd.Timestamp, date)):
                                 try:
                                     final_date_str_edit = value.strftime('%Y-%m-%d')
                                 except:
-                                    pass 
+                                    pass
                         
                         if final_date_str_edit:
                             update_data[col] = final_date_str_edit 
@@ -226,7 +227,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
 
 
-# 网页抓取函数
+# === 核心修改：完全基于标题的抓取规则 ===
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -239,62 +240,74 @@ def scrape_card_data(url):
         response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.content, 'html.parser')
 
+        # 1. 获取标题
         name_tag = soup.find(['h1', 'h2'], class_=re.compile(r'heading|title', re.I))
         full_title = name_tag.get_text(strip=True) if name_tag else ""
         
         if not full_title:
              return {"error": "未能找到卡牌名称标题。"}
 
-        card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
-        temp_title = full_title 
+        # 初始化变量
+        card_name = "N/A"
+        rarity = ""
+        color = ""
+        card_number = ""
+        card_set = "" 
+        
+        text = full_title # 使用标题副本进行处理
 
-        # 抓取逻辑
-        collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
-        is_collection_found = False
-        if collection_tag:
-            collection_text = collection_tag.get_text(strip=True)
-            set_match = re.search(r'≪収録≫\s*(.*?)(\w+[\s\w]+?【[A-Z0-9\-\_]+?\】)', collection_text, re.DOTALL)
-            if set_match:
-                card_set = set_match.group(2).strip()
-                is_collection_found = True
+        # 2. 提取 Rarity 【...】 (提取后从文本移除)
+        r_match = re.search(r'【(.+?)】', text)
+        if r_match:
+            rarity = r_match.group(1).strip()
+            text = text.replace(r_match.group(0), ' ').strip()
+        
+        # 3. 提取 Color 《...》 (提取后从文本移除)
+        c_match = re.search(r'《(.+?)》', text)
+        if c_match:
+            color = c_match.group(1).strip()
+            text = text.replace(c_match.group(0), ' ').strip()
+            
+        # 4. 提取末尾的 [...] 信息 (包含 Series 和 Number)
+        # 查找最后一个 [...] 块
+        b_match = re.search(r'\[([^\]]+)\]\s*$', text)
+        if b_match:
+            bracket_content = b_match.group(1).strip()
+            # 从主文本中移除这部分，剩下的就是卡名
+            text = text.replace(b_match.group(0), ' ').strip()
+            
+            # --- 解析 [...] 内部 ---
+            
+            # 规则 A：检查是否存在 『...』 (例如 [SPOP07-001『EB02』])
+            set_in_bracket_match = re.search(r'『(.+?)』', bracket_content)
+            
+            if set_in_bracket_match:
+                # 『』内是系列
+                card_set = set_in_bracket_match.group(1).strip()
+                # 移除系列，剩下的就是编号
+                card_number = bracket_content.replace(set_in_bracket_match.group(0), '').strip()
             else:
-                set_match_fallback = re.search(r'≪収録≫\s*(.+?)(?:\s*。|\s*、|\s*<|$)|\s+(.+?)(?:\s*。|\s*、|\s*<|$)', collection_text, re.DOTALL)
-                if set_match_fallback:
-                    card_set = (set_match_fallback.group(1) or set_match_fallback.group(2)).strip()
-                    is_collection_found = True
-            if is_collection_found:
-                card_set = re.sub(r'^[\[（「『]', '', card_set).strip()
-                card_set = re.sub(r'[\]）」』]$', '', card_set).strip()
+                # 规则 B：无『』时，例如 [【1st ANNIVERSARY SET】版OP01-006]
+                # 尝试找到末尾的编号 (格式通常是 字母数字组合-数字)
+                # 正则：[A-Za-z0-9]+-\d+ (例如 OP01-006)
+                num_match = re.search(r'([A-Za-z0-9]+-\d+)\s*$', bracket_content)
+                if num_match:
+                    card_number = num_match.group(1).strip()
+                    # 编号之前的部分是系列
+                    card_set = bracket_content[:num_match.start()].strip()
+                else:
+                    # 兜底：如果找不到编号格式，整个括号内容作为系列
+                    card_set = bracket_content
+        
+        # 5. 提取 Name
+        # 经过上述移除后，剩下的部分就是卡名
+        card_name = text.strip()
 
-        rarity_match = re.search(r'【(.+?)】', temp_title)
-        if rarity_match:
-            rarity = rarity_match.group(1).strip()
-            temp_title = temp_title.replace(rarity_match.group(0), ' ').strip()
-        
-        color_match = re.search(r'《(.+?)》', temp_title)
-        if color_match:
-            color = color_match.group(1).strip()
-            temp_title = temp_title.replace(color_match.group(0), ' ').strip()
-        
-        number_match = re.search(r'([A-Z0-9]{1,}\-\d{2,})', temp_title) 
-        if number_match:
-            card_number = number_match.group(1).strip()
-            temp_title_without_number = temp_title[:number_match.start()] + temp_title[number_match.end():]
-        else:
-            temp_title_without_number = temp_title
-        
-        if not is_collection_found:
-            name_part = re.match(r'(.+?)[\s\[『]', temp_title_without_number.strip())
-            if name_part:
-                card_name = name_part.group(1).strip()
-                card_set = temp_title_without_number[len(name_part.group(0)):].strip()
-            else:
-                card_name = temp_title_without_number.strip()
-                card_set = ""
-            card_set = re.sub(r'[\[\]『』]', '', card_set).strip()
-        else:
-            card_name = temp_title_without_number.strip()
+        # 6. 特殊处理：SPOP -> OP
+        if "SPOP" in card_number:
+            card_number = card_number.replace("SPOP", "OP")
 
+        # 7. 提取图片链接
         image_url = None
         og_image_tag = soup.find('meta', property='og:image')
         if og_image_tag:
@@ -305,10 +318,16 @@ def scrape_card_data(url):
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
         
+        if not image_url:
+            st.warning("未能找到图片链接。")
+
         return {
             "card_name": card_name, "card_number": card_number, "card_set": card_set,
             "card_rarity": rarity, "card_color": color, "image_url": image_url, "error": None
         }
+
+    except requests.exceptions.RequestException as e:
+        return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
         return {"error": f"解析错误: {e}"}
 
@@ -322,6 +341,7 @@ with st.sidebar:
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
         st.success(f"✅ **{card_name}** 录入成功！", icon="🎉") 
+        components.html('<script>window.parent.scrollTo(0,0);</script>', height=0)
         
     st.header("🌐 网页自动填充")
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
@@ -333,8 +353,10 @@ with st.sidebar:
             if not scrape_url: st.warning("请输入网址。")
             else:
                 st.session_state['scrape_result'] = scrape_card_data(scrape_url)
-                if st.session_state['scrape_result']['error']: st.error(st.session_state['scrape_result']['error'])
-                else: st.success("数据抓取完成。")
+                if st.session_state['scrape_result'].get('error'): 
+                    st.error(st.session_state['scrape_result']['error'])
+                else: 
+                    st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
                 st.rerun() 
                  
@@ -359,9 +381,11 @@ with st.sidebar:
         set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_form_{suffix}") 
         rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_form_{suffix}") 
         color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
+        
         # 价格栏位默认为空
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, value=None, key=f"price_in_form_{suffix}")
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
+        
         date_in = st.date_input("8. 录入日期", value=st.session_state['last_entry_date'], key=f"date_in_form_{suffix}")
 
         st.divider()
@@ -379,6 +403,7 @@ with st.sidebar:
             with st.spinner("🚀 数据即时保存中..."):
                 final_price = price_in if price_in is not None else 0.0
                 add_card(name_in, card_number_in, set_in, final_price, quantity_in, rarity_in, color_in, date_in, final_image_path)
+            
             st.session_state['last_entry_date'] = date_in
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
@@ -453,16 +478,9 @@ else:
     
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
     
-    # 核心修复 1: 准备数据，使用 datetime.date 类型（Streamlit 最友好）
-    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
-    # 填充 NaT 为 None，避免 data_editor 报错
-    display_df['date'] = date_series.apply(lambda x: x if pd.notna(x) else None)
+    # 强制将日期列转换为字符串 YYYY-MM-DD
+    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d').fillna("")
     
-    # 强制将文本列转换为字符串
-    text_cols = ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']
-    for col in text_cols:
-        display_df[col] = display_df[col].astype(str).replace('nan', '')
-
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
