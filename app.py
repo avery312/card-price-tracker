@@ -31,6 +31,7 @@ if 'last_entry_date' not in st.session_state:
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
     
+# 保持搜索输入框的状态
 if 'search_name_input' not in st.session_state:
     st.session_state['search_name_input'] = ""
 if 'search_set_input' not in st.session_state:
@@ -43,16 +44,19 @@ if 'autosave_message' not in st.session_state:
 
 
 def clear_all_data():
+    """清除所有录入相关 Session State，用于“一键清除录入内容”按钮。"""
     st.session_state['scrape_result'] = {} 
-    st.session_state['form_key_suffix'] += 1 
+    st.session_state['form_key_suffix'] += 1 # 刷新表单 key
     st.session_state['last_entry_date'] = datetime.now().date() 
 
-def clear_search_filters():
+def clear_search_filters_action():
+    """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
     # 强制清空筛选输入框的状态
     st.session_state["search_name_input"] = ""
     st.session_state["search_set_input"] = ""
+    # 清除 date_input 的值
     st.session_state["date_range_input"] = [] 
-    st.rerun() 
+    # 注意: 在 on_click 回调中，Streamlit 会在状态更新后自动触发重跑，无需 st.rerun()
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -105,14 +109,15 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
+        # 获取最大 ID 并递增
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
-        
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
             max_id = response.data[0]['id']
             
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
+        # 准备新行数据
         new_row_data = {
             "id": new_id,
             "date": date.strftime('%Y-%m-%d'),
@@ -180,10 +185,10 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                         # 兼容 date 和 datetime 对象，并转换为 Supabase 需要的字符串格式
                         if isinstance(value, (datetime, pd.Timestamp, date)): 
                             try:
-                                # 确保不是 NaT，否则会报错
                                 if pd.isna(value):
                                      update_data[col] = None 
                                 else:
+                                     # 确保日期格式正确
                                      update_data[col] = value.strftime('%Y-%m-%d')
                             except Exception:
                                 update_data[col] = None 
@@ -299,6 +304,7 @@ def scrape_card_data(url):
 # === 界面布局 ===
 st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout="wide")
 
+# 用于强制刷新表单 key
 suffix = str(st.session_state['form_key_suffix']) 
 
 # --- 侧边栏：录入 ---
@@ -323,9 +329,16 @@ with st.sidebar:
                 st.rerun() 
                  
     with col_clear_btn:
-        if st.button("一键清除录入内容", type="primary", key=f"clear_btn_{suffix}"):
-            clear_all_data()
-            st.rerun() 
+        # 使用回调函数清除状态，并触发 reru 刷新侧边栏表单
+        if st.button(
+            "一键清除录入内容", 
+            type="primary", 
+            key=f"clear_btn_{suffix}",
+            on_click=clear_all_data
+        ):
+             # clear_all_data 内部会递增 suffix 并修改其他 session state，因此需要 reru
+             st.rerun() 
+
 
     st.divider()
     st.header("📝 手动录入/修正")
@@ -433,6 +446,8 @@ else:
     with col_s3: 
         date_range = st.date_input(
             "搜索 时间范围", 
+            # 使用列表初始化，如果 session state 为空，则 date_input 默认是当前日期，但这会干扰清空操作。
+            # 为了确保清空按钮能生效，我们需要在 session state 中维护状态
             value=st.session_state.get("date_range_input", []), 
             help="请选择开始和结束日期", 
             key="date_range_input"
@@ -440,8 +455,13 @@ else:
     
     with col_s4: 
         st.write(" ") 
-        if st.button("清空筛选", key="clear_filters_btn", use_container_width=True):
-            clear_search_filters() 
+        # 【关键修正】：使用 on_click 回调来清空筛选状态，解决 StreamlitAPIException
+        st.button(
+            "清空筛选", 
+            key="clear_filters_btn", 
+            use_container_width=True,
+            on_click=clear_search_filters_action
+        ) 
 
     # --- 筛选逻辑 (用于编辑和分析) ---
     filtered_df = df.copy()
@@ -459,6 +479,7 @@ else:
     if search_set:
         filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
     if len(date_range) == 2:
+        # 确保 date_range 包含两个日期
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
 
     
@@ -467,19 +488,18 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
-    # 【多选删除提示】
     st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 1. 清理日期类型：尝试转换为 date 对象，并将 NaT 替换为 Python 的 None
+    # 1. 【关键修正】清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
     date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
     display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
     
     display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
-    # 2. 强制重置索引：确保索引连续
+    # 2. 【关键修正】强制重置索引：确保索引连续
     display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -489,6 +509,7 @@ else:
 
     if display_df_for_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
+        # 确保 session state 中存在 data_editor 键，防止后续逻辑报错
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
         edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
@@ -506,18 +527,16 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # **********************************************
-        # 【最终修复：移除 selection_mode 参数以兼容旧版本 Streamlit】
+        # 【最终修正】移除 selection_mode 参数以兼容旧版本 Streamlit
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
+            # selection_mode 默认就是 multi-row，旧版本 Streamlit 不支持此参数
             use_container_width=True 
-            # 移除 selection_mode="multi-row"
         )
-        # **********************************************
 
     # 【核心自动保存逻辑】
     editor_state = st.session_state.get("data_editor")
