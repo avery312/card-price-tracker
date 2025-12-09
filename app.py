@@ -33,6 +33,13 @@ if 'search_name_input' not in st.session_state:
     st.session_state['search_name_input'] = ""
 if 'search_set_input' not in st.session_state:
     st.session_state['search_set_input'] = ""
+    
+# 【新增】：用于显示自动保存成功的临时状态
+if 'autosave_successful' not in st.session_state:
+    st.session_state['autosave_successful'] = False
+if 'autosave_message' not in st.session_state:
+    st.session_state['autosave_message'] = ""
+
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
@@ -123,7 +130,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心修改】：新的增量保存函数
+# 【核心修改】：增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -133,6 +140,9 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     supabase = connect_supabase()
     if not supabase: return
     
+    deleted_count = 0
+    updated_count = 0
+    
     try:
         # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
@@ -141,7 +151,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
-                st.info(f"正在删除 {len(ids_to_delete)} 条记录...")
+                deleted_count = len(ids_to_delete)
                 # 使用 Supabase 的 `in` 过滤器进行批量删除
                 supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
@@ -151,10 +161,16 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             data_to_upsert = []
             
             for filtered_index, changes in edited_rows.items():
+                # 检查这个索引是否同时被删除，如果是，则跳过（删除优先）
+                if filtered_index in deleted_indices:
+                    continue
+                    
                 # 获取原始 ID，它是更新记录的唯一标识
                 row_id = displayed_df.iloc[filtered_index]['id']
                 
                 # 从原始显示的行数据开始
+                # 注意：这里需要确保获取到的是最新的数据，如果 Streamlit 已经更新了 edited_df，则应该从 edited_df 拿
+                # 为了保持简单和健壮，我们基于原始的 displayed_df + changes 来构建 update_data
                 original_row = displayed_df.iloc[filtered_index].to_dict()
                 
                 # 应用所有修改
@@ -162,15 +178,16 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 
                 for col in NEW_EXPECTED_COLUMNS:
                     if col == 'id':
-                        continue # ID 不变
+                        continue 
                         
-                    value = changes.get(col, original_row.get(col)) # 使用修改后的值，如果没有修改则使用原值
+                    # 优先使用 changes 中的值，如果没有则使用 original_row 中的值
+                    value = changes.get(col, original_row.get(col)) 
                     
                     if col == 'date':
                         # 确保日期格式为 YYYY-MM-DD
                         if isinstance(value, datetime) or isinstance(value, pd.Timestamp):
                             update_data[col] = value.strftime('%Y-%m-%d')
-                        elif isinstance(value, datetime.date): # st.date_input 返回 date object
+                        elif isinstance(value, datetime.date): 
                             update_data[col] = value.strftime('%Y-%m-%d')
                         elif isinstance(value, str):
                             update_data[col] = value
@@ -186,14 +203,19 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 data_to_upsert.append(update_data)
             
             if data_to_upsert:
-                st.info(f"正在更新 {len(data_to_upsert)} 条记录...")
+                updated_count = len(data_to_upsert)
                 # Supabase UPSERT (根据主键 'id' 自动更新或插入)
                 supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
-        st.success("数据修改已即时保存到 Supabase！")
+        
+        if deleted_count > 0 or updated_count > 0:
+            msg = f"✅ 已自动保存：更新 {updated_count} 条，删除 {deleted_count} 条。"
+            st.session_state['autosave_successful'] = True
+            st.session_state['autosave_message'] = msg
         
     except Exception as e:
-        st.error(f"保存增量修改失败。错误: {e}")
+        st.session_state['autosave_successful'] = True
+        st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
 
 
 # 网页抓取函数 (保持不变)
@@ -364,6 +386,17 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
+# 检查并显示自动保存结果
+if st.session_state.get('autosave_successful'):
+    if "❌" in st.session_state['autosave_message']:
+        st.error(st.session_state['autosave_message'])
+    else:
+        st.success(st.session_state['autosave_message'])
+        
+    st.session_state['autosave_successful'] = False
+    st.session_state['autosave_message'] = ""
+    
+# 检查并显示录入结果
 if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
     st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
@@ -428,8 +461,8 @@ else:
     
     # --- 📝 数据编辑区域 ---
     
-    st.markdown("### 📝 数据编辑（双击单元格修改、仅显示筛选结果）")
-    # 【新安全提示】
+    st.markdown("### 📝 数据编辑（自动保存模式）")
+    st.caption("✨ **自动保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将自动保存您的修改或删除。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
     st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）。")
     
@@ -447,6 +480,9 @@ else:
 
     if display_df_for_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
+        # 即使没有数据，也要确保 data_editor 状态存在，否则下面的检查会失败
+        if "data_editor" not in st.session_state:
+            st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
@@ -471,16 +507,23 @@ else:
             num_rows="fixed", # 仅允许修改现有行和删除行
         )
 
-        # 检查是否有编辑变动或删除操作
-        editor_state = st.session_state["data_editor"]
-        if editor_state["edited_rows"] or editor_state["deleted_rows"]:
-            st.warning("⚠️ 数据修改或删除操作已检测到。请点击 **保存修改** 按钮！")
-            
-            if st.button("💾 确认并保存所有修改", type="primary"):
-                with st.spinner("🚀 数据增量保存中..."):
-                    # 调用新的增量保存函数
-                    save_incremental_changes(display_df_for_editor, editor_state)
-                st.rerun()
+    # 【核心自动保存逻辑】
+    # 检查是否有编辑变动或删除操作
+    editor_state = st.session_state.get("data_editor")
+    
+    # 确保状态存在且有变化
+    if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
+        
+        # 移除警告和按钮，直接触发保存
+        st.info("🔄 检测到修改，正在自动保存...")
+        
+        with st.spinner("🚀 数据增量自动保存中..."):
+            # 调用增量保存函数
+            # 传递原始显示的 DataFrame，因为索引是相对于这个 DataFrame 的
+            save_incremental_changes(display_df_for_editor, editor_state)
+        
+        # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
+        st.rerun()
 
     
     st.divider()
