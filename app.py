@@ -468,8 +468,8 @@ else:
     st.markdown("### 📝 数据编辑（自动保存模式）")
     st.caption("✨ **自动保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将自动保存您的修改或删除。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
-    # 【修复/优化】：改进多行删除的提示
-    st.caption("ℹ️ **删除提示**：要删除单行或多行，请**选中行头（最左侧的空白区域）**，然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
+    # 【修复后的提示】：现在最左侧的索引编号就是选择区域
+    st.caption("ℹ️ **删除提示 (已修复)**：要删除单行或多行，请**点击最左侧的行编号**进行选择（行编号现在已可见），然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
@@ -485,7 +485,6 @@ else:
 
     if display_df_for_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
-        # 即使没有数据，也要确保 data_editor 状态存在，否则下面的检查会失败
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
         edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
@@ -503,11 +502,11 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 使用筛选后的数据作为输入
+        # 关键修复: 移除 hide_index=True，以显示行索引/选择区域
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
-            hide_index=True,
+            # hide_index=True, # <-- 移除此行以显示行选择区域
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
