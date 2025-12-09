@@ -465,26 +465,21 @@ else:
     # --- 📝 数据编辑区域 ---
     
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
-    st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将**只更新**您修改的单元格数据到数据库。")
-    st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
+    st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**只更新**您修改的单元格数据到数据库。")
+    st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
     # 【多选删除提示】
     st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # **********************************************
-    # 【关键修正：解决 TypeError - 步骤 1/2: 清理日期类型】
-    # 1. 尝试转换为 date 对象
+    # 1. 清理日期类型：尝试转换为 date 对象，并将 NaT 替换为 Python 的 None
     date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
-    # 2. 明确将 NaT (Pandas的无效时间) 替换为 Python 的 None
     display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
-    # **********************************************
-
+    
     display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
-    # 【关键修正：解决 TypeError - 步骤 2/2: 强制重置索引】
-    # 确保索引连续，与 data_editor 内部使用的 0-based 索引一致。
+    # 2. 强制重置索引：确保索引连续
     display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
@@ -500,7 +495,6 @@ else:
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
-            # DateColumn 现在有干净的 date 或 None 作为输入
             "date": st.column_config.DateColumn("录入时间", width=80), 
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
@@ -512,16 +506,18 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 启用多选模式，显示左侧的复选框
+        # **********************************************
+        # 【最终修复：移除 selection_mode 参数以兼容旧版本 Streamlit】
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
-            selection_mode="multi-row", 
             use_container_width=True 
+            # 移除 selection_mode="multi-row"
         )
+        # **********************************************
 
     # 【核心自动保存逻辑】
     editor_state = st.session_state.get("data_editor")
@@ -644,5 +640,5 @@ else:
             data=csv_data,
             file_name='card_data_full_export.csv',
             mime='text/csv',
-            help="点击下载 Supabase 中的所有数据，用于备份。"
+            help='点击下载 Supabase 中的所有数据，用于备份。'
         )
