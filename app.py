@@ -130,7 +130,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心修复】：增量保存函数，用于自动保存
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -148,6 +148,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # 此处支持多行索引，实现多行删除
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -182,21 +183,17 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     value = changes.get(col, original_row.get(col)) 
                     
                     if col == 'date':
-                        # 核心修复：使用元组检查多种日期类型，避免 isinstance() 错误
+                        # 修复后的日期类型检查逻辑
                         if isinstance(value, (datetime, pd.Timestamp, date)): 
-                            # 如果值是日期或时间戳类型，尝试格式化
                             try:
                                 update_data[col] = value.strftime('%Y-%m-%d')
                             except Exception:
                                 update_data[col] = None 
                         elif isinstance(value, str):
-                            # 如果已经是字符串，直接使用
                             update_data[col] = value
                         elif pd.isna(value) or value is None:
-                            # 处理 NaN 或 None
                             update_data[col] = None
                         else:
-                            # 兜底：其他类型不处理或设为 None
                             update_data[col] = None
                             
                     elif col in ['price']:
@@ -471,7 +468,8 @@ else:
     st.markdown("### 📝 数据编辑（自动保存模式）")
     st.caption("✨ **自动保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将自动保存您的修改或删除。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
-    st.caption("ℹ️ **删除提示**：请选中要删除的行，然后按键盘上的 **`Delete`** 键（或使用右上角的菜单）。")
+    # 【修复/优化】：改进多行删除的提示
+    st.caption("ℹ️ **删除提示**：要删除单行或多行，请**选中行头（最左侧的空白区域）**，然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
