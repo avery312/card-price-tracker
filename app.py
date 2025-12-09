@@ -29,6 +29,9 @@ if 'submitted_card_name' not in st.session_state:
 # 【新增/修正】：初始化日期输入框的默认值，用于保持上次选择的日期
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
+# 【新增】：初始化日期筛选的默认值，用于清除筛选后恢复默认
+if 'date_range_input' not in st.session_state:
+    st.session_state['date_range_input'] = [] 
 
 def clear_all_data():
     st.session_state['scrape_result'] = {} 
@@ -357,16 +360,38 @@ else:
     
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
-    col_s1, col_s2, col_s3 = st.columns(3) 
-    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索") 
-    with col_s2: search_set = st.text_input("搜索 系列/版本")
-    with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
+    
+    # 【修复 1.1】：增加第四列用于放置“清空筛选”按钮，并添加显式 key
+    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
+    
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索", key="search_name_input") 
+    with col_s2: search_set = st.text_input("搜索 系列/版本", key="search_set_input")
+    with col_s3: 
+        # 使用 st.session_state 来控制 value，以便被“清空筛选”按钮重置
+        date_range = st.date_input(
+            "搜索 时间范围", 
+            value=st.session_state.get("date_range_input", []), 
+            help="请选择开始和结束日期", 
+            key="date_range_input"
+        )
+    
+    # 【修复 1.2】：恢复“清空筛选”按钮和逻辑
+    with col_s4: 
+        st.write(" ") # 增加空行，使按钮与输入框对齐
+        if st.button("清空筛选", key="clear_filters_btn", use_container_width=True):
+            # 清除 session state 中与筛选输入框绑定的值
+            if "search_name_input" in st.session_state:
+                st.session_state["search_name_input"] = ""
+            if "search_set_input" in st.session_state:
+                st.session_state["search_set_input"] = ""
+            if "date_range_input" in st.session_state:
+                # date_input 的 value 是一个列表或元组，清空它
+                st.session_state["date_range_input"] = [] 
+            st.rerun() # 强制重新执行脚本，显示所有数据
 
-    # 筛选逻辑
+    # 筛选逻辑（此部分逻辑正确，当搜索框为空时自动跳过筛选）
     filtered_df = df.copy()
     
-    # 【修改 1】：确保搜索内容为空时显示所有数据。
-    # 当 st.text_input 为空时，search_name 为 ""，条件 if search_name: 为 False，自动跳过筛选，显示所有数据。
     if search_name:
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
         search_target = (
@@ -384,6 +409,7 @@ else:
 
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    # 确保 data_editor の date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
@@ -396,7 +422,7 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 【核心修正】：再缩小1/3，总宽度约为770px
+    # 【列宽配置保持不变】
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True, width=50), 
         "date": st.column_config.DateColumn("录入时间", width=80), 
@@ -413,7 +439,6 @@ else:
     edited_df = st.data_editor(
         display_df,
         key="data_editor",
-        # 移除 use_container_width=True，以阻止自动调整列宽
         hide_index=True,
         column_order=['id'] + FINAL_DISPLAY_COLUMNS,
         column_config=column_config_dict,
@@ -429,6 +454,7 @@ else:
         if st.button("💾 确认并保存所有修改", type="primary"):
             with st.spinner("🚀 数据即时保存中..."):
                 update_data_and_save(final_df_to_save)
+            # 强制重新执行脚本
             st.rerun()
 
     
@@ -471,14 +497,13 @@ else:
             if not target_df.empty:
                 curr_price = target_df.iloc[-1]['price']
                 total_quantity = target_df['quantity'].sum()
+                avg_price = target_df['price'].mean()
                 
                 max_price = target_df['price'].max()
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
                 
                 min_price = target_df['price'].min()
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
-                
-                avg_price = target_df['price'].mean()
 
                 # 【修改 2】：优化价格展示，使用 st.metric 和 st.columns
                 c1, c2 = st.columns(2)
@@ -488,8 +513,9 @@ else:
                 st.divider()
                 
                 c3, c4 = st.columns(2)
-                c3.metric("📈 历史最高", f"¥{max_price:,.0f}", f"{max_price_date}")
-                c4.metric("📉 历史最低", f"¥{min_price:,.0f}", f"{min_price_date}")
+                # 使用 delta 显示记录的日期
+                c3.metric("📈 历史最高", f"¥{max_price:,.0f}", f"于 {max_price_date} 录入")
+                c4.metric("📉 历史最低", f"¥{min_price:,.0f}", f"于 {min_price_date} 录入")
                 
                 st.metric("📊 平均价格", f"¥{avg_price:,.2f}")
                 
@@ -505,7 +531,7 @@ else:
             else:
                 st.info("需至少两条记录绘制走势")
         
-        # 【修改 2 补充】：新增最近10次录入记录表格
+        # 【修改 3】：新增最近10次录入记录表格（包含数量）
         if not target_df.empty:
             st.markdown("#### 🕒 最近10次录入记录")
             
@@ -532,7 +558,6 @@ else:
                     "数量 (张)": st.column_config.NumberColumn(format="%d")
                 }
             )
-
     
     # --- 📥 数据导出 (用于备份或迁移) ---
     st.divider()
