@@ -510,7 +510,8 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**自动保存**您修改的内容。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
-    st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
+    # 删除了多行删除的提示，替换为单行删除的提示
+    st.caption("🗑️ **删除提示**：选中一行（点击行内容），然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
@@ -549,13 +550,14 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # ⚠️ 注意：这里我们使用了一个 key="data_editor" 捕获编辑状态，但没有使用 edited_df = st.data_editor(...) 的返回值
+        # 核心修改：明确设置为单行选择，从而禁用多行选择的复选框
         st.data_editor(
             display_df, 
             key="data_editor", # 核心：将编辑状态存入 session state
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
+            selection_mode="single-row", # 移除多行删除功能的关键
             num_rows="fixed", # 仅允许修改现有行和删除行
             use_container_width=True 
         )
