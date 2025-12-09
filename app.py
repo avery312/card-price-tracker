@@ -28,35 +28,17 @@ if 'submitted_card_name' not in st.session_state:
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
     
-# 新增 Session state for autosave messages (用于显示自动保存结果)
 if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
     
-# 新增 Session state for filter persistence (用于保持筛选状态)
-# 暂时禁用筛选状态的 Session state 赋值，以简化
-# if 'date_range_input' not in st.session_state:
-#     st.session_state['date_range_input'] = [] 
-# if 'search_name_input' not in st.session_state:
-#     st.session_state['search_name_input'] = ""
-# if 'search_set_input' not in st.session_state:
-#     st.session_state['search_set_input'] = ""
-
 
 def clear_all_data():
     """清除所有录入相关 Session State。"""
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
-
-# 禁用 clear_search_filters_action 因为之前没有定义相关的 session state 变量
-# def clear_search_filters_action():
-#     """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
-#     st.session_state["search_name_input"] = ""
-#     st.session_state["search_set_input"] = ""
-#     st.session_state["date_range_input"] = [] 
-
 
 # === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
@@ -115,7 +97,6 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
         
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
-            # 找到当前最大的 ID
             max_id = response.data[0]['id']
             
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
@@ -140,7 +121,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心功能：实现全量保存，以简化 data_editor 的复杂状态处理】
+# 处理数据编辑器的内容并保存到 Supabase
 def update_data_and_save(edited_df: pd.DataFrame):
     """
     删除 Supabase 中的所有数据，然后重新插入编辑后的 DataFrame 中的所有数据。
@@ -150,27 +131,22 @@ def update_data_and_save(edited_df: pd.DataFrame):
     
     try:
         # 1. 数据类型清理和格式化
+        # 确保日期是 YYYY-MM-DD 字符串格式
         edited_df['date'] = pd.to_datetime(edited_df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+        
         # 确保编辑后的 price 和 quantity 是正确的数值类型
         edited_df['id'] = pd.to_numeric(edited_df['id'], errors='coerce').fillna(0).astype(int)
         edited_df['price'] = pd.to_numeric(edited_df['price'], errors='coerce').fillna(0.0).astype(float)
         edited_df['quantity'] = pd.to_numeric(edited_df['quantity'], errors='coerce').fillna(0).astype(int)
         
+        # 确保所有字符串列被清空 nan/None
+        for col in ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']:
+             edited_df[col] = edited_df[col].astype(str).replace('nan', '', regex=False).replace('None', '', regex=False)
+        
         df_final = edited_df[NEW_EXPECTED_COLUMNS].fillna('')
         data_to_save = df_final.to_dict('records')
 
         # 2. 核心操作：删除所有旧数据，然后重新插入所有新数据
-        # 注意：这里假设 Supabase 中的 'id' 字段是自增的，但我们必须依靠 DataFrame 中的 id
-        # 由于我们使用 st.data_editor，如果允许添加行，可能会有新的 id，但我们这里只处理编辑和删除
-        
-        # 为简单起见，我们使用一个快速的全表删除再插入（如果数据量不大）
-        # 实际生产中应使用 UPSERT 或增量更新，但 Streamlit 的 data_editor 状态难以精确映射。
-        # 我们可以尝试使用事务来确保数据一致性，但 Streamlit 不支持。
-        
-        # 为了避免全量删除丢失数据，我们只删除被修改过的记录 (这在全量更新逻辑中不适用)
-        # 最简单稳定的方式：使用编辑后的 DataFrame 覆盖整个表（前提是 edited_df 包含所有数据）
-
-        # 针对您上一个版本代码中的全量保存逻辑，我们保留它
         supabase.table(SUPABASE_TABLE_NAME).delete().neq('id', 0).execute() 
 
         if data_to_save:
@@ -382,13 +358,14 @@ if df.empty:
 else:
     # 预处理
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
+    # 这一步的 fillna 只是初步清理，不能保证 dtype
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
     df['color'] = df['color'].fillna('') 
     df['card_set'] = df['card_set'].fillna('') 
     df['card_number'] = df['card_number'].fillna('') 
     
-    # 【修正区域】：确保 price 和 quantity 的类型一致性
+    # 确保 price 和 quantity 的类型一致性
     df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0.0).astype(float)
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     
@@ -439,19 +416,23 @@ else:
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore').copy()
 
     # 1. 核心修正：确保日期是兼容 st.data_editor 的 datetime.date 类型
-    # 将原始的日期字符串（或对象）转换为 datetime 对象
     date_series = pd.to_datetime(display_df['date'], errors='coerce')
-    
-    # 填充 NaT 值：使用今天日期来替换任何无效或缺失的日期
     date_series = date_series.fillna(datetime.now())
-    
-    # 转换为 Python 原生的 date 对象，以最大化与 st.column_config.DateColumn 的兼容性
     display_df['date'] = date_series.dt.date
+    
+    # 【新增核心修正 3: 确保所有 string/Image 列都是非空字符串】 (新的修复点)
+    string_cols_to_clean = ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']
+    for col in string_cols_to_clean:
+        # 强制转换为 string 类型，并将任何 NaT, NaN, None, 或 'nan' 字符串转换为空字符串
+        display_df[col] = display_df[col].astype(str).replace('nan', '', regex=False).replace('None', '', regex=False)
+    # 确保 id 也是整数 (虽然前面处理过，但再检查一次)
+    display_df['id'] = pd.to_numeric(display_df['id'], errors='coerce').fillna(0).astype(int)
+
 
     # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
     display_df = display_df.sort_values(by='id', ascending=False)
     
-    # 强制重置索引 (这一步是必要的，但 Streamlit 的 data_editor 会自行处理索引映射)
+    # 重置索引 (确保 Streamlit 内部的索引映射不会出错)
     display_df = display_df.reset_index(drop=True) 
 
     
@@ -465,7 +446,7 @@ else:
         # 确保 session state 中存在 data_editor 键，防止后续逻辑报错
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
-        edited_df = display_df.copy() # 如果是空的，edited_df 也是空的
+        edited_df = display_df.copy() 
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
@@ -473,22 +454,22 @@ else:
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
             "card_set": st.column_config.Column("系列", width=100), 
-            # 使用 NumberColumn 确保数据类型正确
             "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
             "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
             "rarity": st.column_config.Column("等级", width=50), 
             "color": st.column_config.Column("颜色", width=50), 
+            # 确保 ImageColumn 在 string 列得到彻底清洗后调用
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # Line 422: st.data_editor call
+        # Line 485: st.data_editor call
         edited_df = st.data_editor(
             display_df, 
-            key="data_editor", # 核心：将编辑状态存入 session state
+            key="data_editor",
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="dynamic", # 允许用户添加新行
+            num_rows="dynamic",
             selection_mode="multi-row",
         )
 
@@ -499,15 +480,12 @@ else:
     if editor_state.get("edited_rows") or editor_state.get("deleted_rows") or (len(edited_df) > len(display_df)):
         st.warning("⚠️ 数据修改、新增或删除操作已检测到。请点击 **保存修改** 按钮！")
         
-        # 由于我们使用全量保存，我们直接将 data_editor 返回的 DataFrame 传递给保存函数
         final_df_to_save = edited_df.copy() 
         
         if st.button("💾 确认并保存所有修改", type="primary"):
             with st.spinner("🚀 数据即时保存中..."):
-                # 调用全量保存函数
                 update_data_and_save(final_df_to_save)
             
-            # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
             st.rerun()
 
     
@@ -538,7 +516,8 @@ else:
             latest_img = target_df.iloc[-1]['image_url'] if not target_df.empty else None
             if latest_img:
                 try:
-                    st.image(latest_img, use_container_width=True) 
+                    # 使用 width 替换 use_container_width
+                    st.image(latest_img, width='container') 
                 except:
                     st.error("图片加载失败")
             else:
@@ -553,7 +532,6 @@ else:
                 avg_price = target_df['price'].mean()
                 
                 max_price = target_df['price'].max()
-                # 确保在取日期时，df不是空的，且日期是有效的
                 max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0] if not target_df[target_df['price'] == max_price].empty else "N/A"
                 
                 min_price = target_df['price'].min()
