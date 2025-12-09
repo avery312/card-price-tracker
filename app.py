@@ -178,40 +178,46 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 update_data = {'id': int(row_id)}
                 
                 # 获取该行未被编辑的原始日期，作为备用日期
-                original_date_str = displayed_df.iloc[filtered_index]['date']
+                # 注意：这个值在 display_df 中已经是 date object 或 None
+                original_date_obj = displayed_df.iloc[filtered_index]['date']
                 
                 # 遍历所有修改的列及其值
                 for col, value in changes.items():
                     
                     # 数据类型转换和清理
                     if col == 'date':
-                        # === 【关键修正】处理日期非空约束问题 ===
+                        # === 【增强修正】处理日期非空约束问题 ===
                         final_date_str = None
                         
-                        # A. 尝试从编辑后的值转换
-                        if isinstance(value, (datetime, pd.Timestamp, date)): 
-                            try:
-                                if pd.notna(value):
-                                     final_date_str = value.strftime('%Y-%m-%d')
-                            except Exception:
-                                pass # 转换失败，保持 None
-                        elif isinstance(value, str) and value:
-                            final_date_str = value
+                        # 1. 尝试使用编辑后的值 (value) 进行转换
+                        if value:
+                            if isinstance(value, (datetime, pd.Timestamp, date)): 
+                                try:
+                                    final_date_str = value.strftime('%Y-%m-%d')
+                                except:
+                                    pass 
+                            elif isinstance(value, str):
+                                # 检查字符串是否是有效的日期格式
+                                try:
+                                    datetime.strptime(value, '%Y-%m-%d')
+                                    final_date_str = value
+                                except:
+                                    pass
                         
-                        # B. 如果编辑后的值仍为空/无效，则回填原始日期
-                        if final_date_str is None and original_date_str:
-                             # original_date_str 已经是 string 或 date 对象
-                             if isinstance(original_date_str, date):
-                                 final_date_str = original_date_str.strftime('%Y-%m-%d')
-                             elif isinstance(original_date_str, str):
-                                 final_date_str = original_date_str
-                        
-                        # C. 如果原始日期也不存在，则使用今天的日期作为最后保险
+                        # 2. 如果编辑后的值无效，则回填原始值 (original_date_obj)
+                        if final_date_str is None and original_date_obj:
+                            if isinstance(original_date_obj, date):
+                                final_date_str = original_date_obj.strftime('%Y-%m-%d')
+                            elif isinstance(original_date_obj, str):
+                                # 以防万一原始值是字符串，直接使用
+                                final_date_str = original_date_obj
+
+                        # 3. 终极回退：如果原始和编辑值都为空，使用今天的日期
                         if final_date_str is None:
                              final_date_str = datetime.now().strftime('%Y-%m-%d')
                              
                         update_data[col] = final_date_str
-                        # === 修正结束 ===
+                        # === 增强修正结束 ===
                             
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
