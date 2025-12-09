@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
+# 明确导入 datetime 和 date 对象
 from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
+# 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
 
@@ -30,7 +32,7 @@ if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
-    
+
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
 if 'search_name_input' not in st.session_state:
@@ -40,16 +42,19 @@ if 'search_set_input' not in st.session_state:
 
 
 def clear_all_data():
+    """清除所有录入相关 Session State。"""
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 def clear_search_filters_action():
+    """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
     st.session_state["search_name_input"] = ""
     st.session_state["search_set_input"] = ""
     st.session_state["date_range_input"] = [] 
 
-# === 辅助函数 ===
+
+# === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
     if pd.isna(text):
         return ""
@@ -60,6 +65,7 @@ def normalize_text_for_fuzzy_search(text):
 
 @st.cache_resource(ttl=None)
 def connect_supabase() -> Client:
+    """使用 Streamlit Secrets 凭证连接到 Supabase 数据库 (连接对象缓存)"""
     try:
         url: str = st.secrets["supabase"]["URL"]
         key: str = st.secrets["supabase"]["KEY"]
@@ -70,12 +76,15 @@ def connect_supabase() -> Client:
         return None
 
 def load_data():
+    """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
     if not supabase:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
+        # 直接读取数据
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
+        
         df = pd.DataFrame(response.data)
         
         if df.empty:
@@ -83,7 +92,9 @@ def load_data():
 
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+        
         df = df[NEW_EXPECTED_COLUMNS] 
+
         return df
     except Exception as e:
         st.error(f"无法从 Supabase 读取数据。错误: {e}")
@@ -95,13 +106,17 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     if not supabase: return
     
     try:
+        # 1. 直接查询 Supabase 获取最大的 ID 
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
+        
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
+            # 找到当前最大的 ID
             max_id = response.data[0]['id']
-        
+            
         new_id = int(max_id + 1) if pd.notna(max_id) else 1
         
+        # 2. 准备要插入的字典数据
         new_row_data = {
             "id": new_id,
             "date": date.strftime('%Y-%m-%d'),
@@ -115,13 +130,17 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
             "image_url": image_url if image_url else ""
         }
         
+        # 3. 执行插入操作
         supabase.table(SUPABASE_TABLE_NAME).insert(new_row_data).execute()
         
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 增量保存函数
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
+    """
+    根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
+    """
     supabase = connect_supabase()
     if not supabase: return
     
@@ -129,15 +148,18 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     updated_count = 0
     
     try:
-        # 1. 处理删除 (DELETE)
+        # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
+            # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+            
             if ids_to_delete:
                 deleted_count = len(ids_to_delete)
+                # 使用 Supabase 的 `in` 过滤器进行批量删除
                 supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
-        # 2. 处理修改 (UPSERT)
+        # 2. 处理修改操作 (UPSERT/UPDATE)
         edited_rows = editor_state.get("edited_rows", {})
         if edited_rows:
             data_to_upsert = []
@@ -149,32 +171,20 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期，防止空值覆盖
-                original_date_obj = displayed_df.iloc[filtered_index]['date']
-                initial_date_str = datetime.now().strftime('%Y-%m-%d')
+                # 获取原始日期字符串
+                original_date_str = displayed_df.iloc[filtered_index]['date']
                 
-                if original_date_obj:
-                    if isinstance(original_date_obj, date):
-                        initial_date_str = original_date_obj.strftime('%Y-%m-%d')
-                    elif isinstance(original_date_obj, str):
-                        initial_date_str = original_date_obj
-                
-                update_data['date'] = initial_date_str
+                # 日期回退值
+                if original_date_str:
+                     update_data['date'] = original_date_str
+                else:
+                     update_data['date'] = datetime.now().strftime('%Y-%m-%d')
                 
                 for col, value in changes.items():
                     if col == 'date':
-                        final_date_str_edit = None
+                        # 编辑器返回的 value 可能是字符串 YYYY-MM-DD
                         if value:
-                            if isinstance(value, (datetime, pd.Timestamp, date)): 
-                                try:
-                                    final_date_str_edit = value.strftime('%Y-%m-%d')
-                                except: pass 
-                            elif isinstance(value, str):
-                                final_date_str_edit = value
-                        
-                        if final_date_str_edit is not None:
-                            update_data[col] = final_date_str_edit 
-
+                             update_data[col] = value
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -196,6 +206,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     except Exception as e:
         st.session_state['autosave_successful'] = True
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
+
 
 # 网页抓取函数
 def scrape_card_data(url):
@@ -219,7 +230,6 @@ def scrape_card_data(url):
         card_name = "N/A"; rarity = "N/A"; color = "N/A"; card_number = "N/A"; card_set = "" 
         temp_title = full_title 
 
-        # 抓取逻辑
         collection_tag = soup.find(lambda tag: tag.name in ['p', 'div', 'span', 'li'] and '≪収録≫' in tag.get_text())
         is_collection_found = False
         if collection_tag:
@@ -270,17 +280,22 @@ def scrape_card_data(url):
         og_image_tag = soup.find('meta', property='og:image')
         if og_image_tag:
             image_url = og_image_tag.get('content')
-            
         if not image_url:
             image_tag = soup.find('img', {'alt': lambda x: x and 'メイン画像' in x}) or \
                         soup.find('img', {'alt': lambda x: x and card_name in x})
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
         
+        if not image_url:
+            st.warning("未能找到图片链接。")
+
         return {
             "card_name": card_name, "card_number": card_number, "card_set": card_set,
             "card_rarity": rarity, "card_color": color, "image_url": image_url, "error": None
         }
+
+    except requests.exceptions.RequestException as e:
+        return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
         return {"error": f"解析错误: {e}"}
 
@@ -308,10 +323,9 @@ with st.sidebar:
                 else: st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
                 st.rerun() 
-                 
     with col_clear_btn:
         if st.button("一键清除录入内容", type="primary", key=f"clear_btn_{suffix}", on_click=clear_all_data):
-            st.rerun()
+            st.rerun() 
 
     st.divider()
     st.header("📝 手动录入/修正")
@@ -379,6 +393,7 @@ df = load_data()
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
+    # 预处理
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -418,31 +433,27 @@ else:
     # --- 📝 数据编辑区域 ---
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
-    st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
+    st.caption("✅ **整行删除**：表格**最左侧**是**行选择区域**。勾选/选中行后，按 **`Delete`** 键删除。")
     
-    # 核心修复 1: 使用 filtered_df.copy() 创建编辑用数据，但先不删除 date_dt
+    # 【核心修复】：
+    # 1. 不删除 date_dt 列，因为后面分析还要用
+    # 2. 创建一个用于显示的 DataFrame，处理日期格式
     display_df = filtered_df.copy()
-
-    # 核心修复 2: 确保 date 列是 Python date 对象，这与 st.column_config.DateColumn 兼容
-    display_df['date'] = display_df['date_dt'].dt.date.fillna(datetime.now().date())
-    
-    # 核心修复 3: 现在可以安全删除 date_dt 了，因为 date 已经转换好了
-    display_df = display_df.drop(columns=['date_dt'], errors='ignore')
-
+    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d')
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
-    display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
+    display_df_editor = display_df[['id'] + FINAL_DISPLAY_COLUMNS] # 只给编辑器必要的列
 
-    if display_df.empty:
+    if display_df_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
-            "date": st.column_config.DateColumn("录入时间", width=80), 
+            "date": st.column_config.DateColumn("录入时间", width=80, format="YYYY-MM-DD"), 
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
             "card_set": st.column_config.Column("系列", width=100), 
@@ -453,27 +464,28 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
+        # 移除 selection_mode="multi-row" 以兼容旧版本
         edited_df = st.data_editor(
-            display_df, 
+            display_df_editor, 
             key="data_editor",
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="fixed", 
-            selection_mode="multi-row",
-            use_container_width=True
+            num_rows="dynamic", # 启用删除功能的关键
+            use_container_width=True 
         )
 
     editor_state = st.session_state.get("data_editor")
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         st.info("🔄 检测到修改，正在自动增量保存...")
         with st.spinner("🚀 数据增量自动保存中..."):
-            save_incremental_changes(display_df, editor_state)
+            save_incremental_changes(display_df_editor, editor_state)
         st.rerun()
 
     st.divider()
     st.markdown("### 📊 单卡深度分析")
-    analysis_df = filtered_df.copy() 
+    analysis_df = filtered_df.copy() # 使用 filtered_df，它包含 date_dt
+    
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
