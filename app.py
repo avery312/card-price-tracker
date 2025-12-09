@@ -5,8 +5,10 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
+# 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
+# 引入 components 用于执行 JavaScript 滚动
 import streamlit.components.v1 as components
 
 # === 配置 ===
@@ -32,6 +34,7 @@ if 'autosave_successful' not in st.session_state:
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
     
+# 新增 Session state for filter persistence (用于保持筛选状态)
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
 if 'search_name_input' not in st.session_state:
@@ -47,7 +50,7 @@ def clear_all_data():
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 def clear_search_filters_action():
-    """清除所有筛选相关的 Session State 变量。"""
+    """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
     st.session_state["search_name_input"] = ""
     st.session_state["search_set_input"] = ""
     st.session_state["date_range_input"] = [] 
@@ -135,7 +138,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 增量保存函数，用于自动保存
+# 【核心功能：实现增量自动保存，已修复日期非空约束问题】
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -164,40 +167,55 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             data_to_upsert = []
             
             for filtered_index, changes in edited_rows.items():
+                # 检查这个索引是否同时被删除，如果是，则跳过（删除优先）
                 if filtered_index in deleted_indices:
                     continue
                 
-                # 安全检查：防止索引越界
-                if filtered_index >= len(displayed_df):
-                    continue
-                    
+                # 获取原始 ID，它是更新记录的唯一标识
                 row_id = displayed_df.iloc[filtered_index]['id']
+                
+                # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期 (Timestamp 对象)
-                original_date_str = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期对象 (此时 display_df 中的 date 是 datetime64[ns] 或 NaT)
+                original_date_val = displayed_df.iloc[filtered_index]['date']
                 
-                # 设置日期回退值
-                initial_date_str = datetime.now().strftime('%Y-%m-%d')
-                if original_date_str:
-                     initial_date_str = original_date_str
+                # --- 【日期非空修正核心逻辑】 ---
+                initial_date_str = datetime.now().strftime('%Y-%m-%d') # 终极回退值
                 
+                if pd.notna(original_date_val):
+                    try:
+                        initial_date_str = original_date_val.strftime('%Y-%m-%d')
+                    except:
+                        pass
+                
+                # 无论如何，先设置一个有效的日期值 (原始值或今天的值)
                 update_data['date'] = initial_date_str 
+                # --- 修正结束 ---
                 
+                # 遍历所有修改的列及其值
                 for col, value in changes.items():
+                    
+                    # 数据类型转换和清理
                     if col == 'date':
+                        # 如果 date 被修改，则尝试使用编辑后的值进行转换和覆盖
                         final_date_str_edit = None
+                        
                         if value:
+                            # 1. 字符串格式
                             if isinstance(value, str):
                                 final_date_str_edit = value
-                            elif isinstance(value, (datetime, pd.Timestamp, date)):
+                            # 2. Timestamp 或 datetime 对象
+                            elif isinstance(value, (datetime, pd.Timestamp, date)): 
                                 try:
                                     final_date_str_edit = value.strftime('%Y-%m-%d')
                                 except:
-                                    pass
+                                    pass 
                         
-                        if final_date_str_edit:
+                        # 只有编辑后的值有效时才覆盖 update_data['date']
+                        if final_date_str_edit is not None:
                             update_data[col] = final_date_str_edit 
+                        # 如果编辑值无效，将保留修正步骤中设置的 initial_date_str
 
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
@@ -210,8 +228,10 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             
             if data_to_upsert:
                 updated_count = len(data_to_upsert)
+                # Supabase UPSERT (根据主键 'id' 自动更新或插入)
                 supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
+        
         if deleted_count > 0 or updated_count > 0:
             msg = f"✅ 已自动保存：更新 {updated_count} 条，删除 {deleted_count} 条。"
             st.session_state['autosave_successful'] = True
@@ -222,7 +242,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
 
 
-# 网页抓取函数
+# 网页抓取函数 (保持不变)
 def scrape_card_data(url):
     st.info(f"正在尝试从 {url} 抓取数据...")
     if not url.startswith("http"):
@@ -324,6 +344,7 @@ with st.sidebar:
     scrape_url = st.text_input("输入卡牌详情页网址:", key=f'scrape_url_input_{suffix}') 
     
     col_scrape_btn, col_clear_btn = st.columns(2)
+    
     with col_scrape_btn:
         if st.button("一键抓取并填充", type="secondary", key=f"scrape_btn_{suffix}"):
             if not scrape_url: st.warning("请输入网址。")
@@ -333,6 +354,7 @@ with st.sidebar:
                 else: st.success("数据抓取完成。")
                 st.session_state['form_key_suffix'] += 1
                 st.rerun() 
+                 
     with col_clear_btn:
         if st.button("一键清除录入内容", type="primary", key=f"clear_btn_{suffix}", on_click=clear_all_data):
             st.rerun() 
@@ -354,10 +376,8 @@ with st.sidebar:
         set_in = st.text_input("3. 系列/版本", value=set_default, key=f"set_in_form_{suffix}") 
         rarity_in = st.text_input("4. 等级 (Rarity)", value=rarity_default, key=f"rarity_in_form_{suffix}") 
         color_in = st.text_input("5. 颜色 (例如: 紫)", value=color_default, key=f"color_in_form_{suffix}") 
-        
-        # 【核心修正】：价格栏添加 value=None，使其默认显示为空
+        # 价格栏位默认为空
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, value=None, key=f"price_in_form_{suffix}")
-        
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
         date_in = st.date_input("8. 录入日期", value=st.session_state['last_entry_date'], key=f"date_in_form_{suffix}")
 
@@ -374,9 +394,10 @@ with st.sidebar:
     if submitted:
         if name_in:
             with st.spinner("🚀 数据即时保存中..."):
-                # 【修正】：如果价格为空，则传递 0.0，避免 None 错误
+                # 如果价格为空，则传递 0.0
                 final_price = price_in if price_in is not None else 0.0
                 add_card(name_in, card_number_in, set_in, final_price, quantity_in, rarity_in, color_in, date_in, final_image_path)
+            
             st.session_state['last_entry_date'] = date_in
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
@@ -408,6 +429,7 @@ df = load_data()
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
+    # 预处理数据类型
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -451,9 +473,14 @@ else:
     
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
     
-    # 强制将日期列转换为字符串 YYYY-MM-DD
-    display_df['date'] = display_df['date'].astype(str)
+    # 💥 【核心修复】：将日期列转换为 datetime64[ns]，完美兼容 DateColumn
+    display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce')
     
+    # 强制将文本列转换为字符串
+    text_cols = ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']
+    for col in text_cols:
+        display_df[col] = display_df[col].astype(str).replace('nan', '')
+
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
@@ -467,7 +494,7 @@ else:
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
-            "date": st.column_config.DateColumn("录入时间", width=80, format="YYYY-MM-DD"), 
+            "date": st.column_config.DateColumn("录入时间", width=80, format="YYYY-MM-DD"), # DateColumn 自动处理 datetime64
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
             "card_set": st.column_config.Column("系列", width=100), 
@@ -478,6 +505,7 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
+        # 移除 selection_mode="multi-row" 以兼容旧版本
         edited_df = st.data_editor(
             display_df, 
             key="data_editor",
