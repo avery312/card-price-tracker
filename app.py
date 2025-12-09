@@ -156,6 +156,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # 这一步是实现整行删除的关键：通过 Streamlit 返回的索引找到对应的 ID
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -510,7 +511,7 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**自动保存**您修改的内容。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
-    st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
+    st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
@@ -549,18 +550,19 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # ⚠️ 注意：这里我们使用了一个 key="data_editor" 捕获编辑状态，但没有使用 edited_df = st.data_editor(...) 的返回值
         st.data_editor(
             display_df, 
             key="data_editor", # 核心：将编辑状态存入 session state
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="fixed", # 仅允许修改现有行和删除行
-            use_container_width=True 
+            num_rows="fixed", # 仅允许修改现有行和删除行 (允许删除现有行)
+            # 【关键修正】：显式设置 selection_mode 并移除 use_container_width=True
+            selection_mode="multi-row",
+            # use_container_width=True 被移除，让 Streamlit 自动为复选框预留空间
         )
 
-    # 【核心自动保存逻辑】
+    # 【核心自动保存/删除逻辑】
     editor_state = st.session_state.get("data_editor")
     
     # 检查是否有编辑变动或删除操作
@@ -568,7 +570,7 @@ else:
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         
         # 立即进行保存，取代手动确认按钮
-        st.info("🔄 检测到修改，正在自动增量保存...")
+        st.info("🔄 检测到修改或删除，正在自动增量保存...")
         
         with st.spinner("🚀 数据增量自动保存中..."):
             # 调用增量保存函数
