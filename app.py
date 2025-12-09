@@ -135,8 +135,8 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
-    - displayed_df 是 data_editor 当前显示的 (已筛选的) DataFrame。
-    - editor_state 包含被编辑和被删除的行索引。
+    - displayed_df 是 data_editor 当前显示的 (已筛选且**已重置索引**) 的 DataFrame。
+    - editor_state 包含被编辑和被删除的行索引 (基于 0-based 连续索引)。
     """
     supabase = connect_supabase()
     if not supabase: return
@@ -148,7 +148,8 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
-            # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # displayed_df 已经被 reset_index(drop=True)，所以 .iloc 对应的是编辑器中的行号。
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -167,6 +168,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     continue
                     
                 # 获取原始 ID，它是更新记录的唯一标识
+                # displayed_df 索引已被重置，filtered_index 正确对应行号
                 row_id = displayed_df.iloc[filtered_index]['id']
                 
                 # 创建一个只包含 ID 和所有修改列的数据字典
@@ -463,7 +465,7 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
-    # 【多选删除提示】：已更新，明确提到复选框
+    # 【多选删除提示】
     st.caption("✅ **多行删除提示**：现在，表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
@@ -472,6 +474,12 @@ else:
     display_df_for_editor['date'] = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date 
 
     display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
+    
+    # **********************************************
+    # 【关键修正：解决 TypeError 的方法】
+    # 强制重置索引，使索引连续，与 data_editor 内部使用的 0-based 索引一致。
+    display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
+    # **********************************************
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
@@ -497,14 +505,14 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 关键修改：新增 selection_mode="multi-row" 启用左侧的多选复选框
+        # 启用多选模式，显示左侧的复选框
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
-            selection_mode="multi-row", # 【修正】启用多选模式，显示左侧的复选框
+            selection_mode="multi-row", 
             use_container_width=True 
         )
 
