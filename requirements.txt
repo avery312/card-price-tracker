@@ -1,7 +1,7 @@
-# 您的应用所需的全部依赖
+streamlit
 pandas
-numpy
 requests
 beautifulsoup4
-gspread
-gspread-dataframe
+numpy
+# Supabase 客户端库
+supabase-py
