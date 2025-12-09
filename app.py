@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+# 明确导入 datetime 和 date 对象
 from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
@@ -34,7 +35,6 @@ if 'autosave_successful' not in st.session_state:
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
     
-# 新增 Session state for filter persistence (用于保持筛选状态)
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
 if 'search_name_input' not in st.session_state:
@@ -182,7 +182,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 设置日期回退值
                 initial_date_str = datetime.now().strftime('%Y-%m-%d')
                 
-                # 检查 original_date 是否有效
+                # 检查 original_date 是否有效 (它应该是 date 对象或 None)
                 if original_date is not None and isinstance(original_date, (date, datetime, pd.Timestamp)):
                      initial_date_str = original_date.strftime('%Y-%m-%d')
                 
@@ -365,7 +365,8 @@ with st.sidebar:
     # --- STEP 1: Card Identification ---
     res = st.session_state.get('scrape_result', {})
     
-    card_number_in_potential = res.get('card_number', "")
+    # 修复：确保 card_number_in_potential 变量名统一，这里使用 number_default
+    number_default = res.get('card_number', "") # 修复这里，之前是 card_number_in_potential
     name_default = res.get('card_name', "")
     set_default = res.get('card_set', "")
     rarity_default = res.get('card_rarity', "") 
@@ -442,13 +443,6 @@ else:
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
     df = df.dropna(subset=['date_dt']) 
     
-    # 提取唯一卡牌信息用于筛选
-    unique_cards_df = df.sort_values('date_dt', ascending=False).drop_duplicates(subset=['card_number'], keep='first')
-    unique_cards_df['display_label'] = unique_cards_df.apply(
-        lambda x: f"[{x['card_number']}] {x['card_name']} ({x['card_set']})", axis=1
-    )
-    st.session_state['unique_cards'] = unique_cards_df[['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url', 'display_label']]
-    
     st.markdown("### 🔍 多维度筛选")
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
     
@@ -480,7 +474,7 @@ else:
     st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
     st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
     
-    # 💥 【核心修复】：准备数据，确保 date 列是 datetime.date 对象，这与 DateColumn 兼容性最好
+    # 核心修复 1: 准备数据，使用 datetime.date 类型（Streamlit 最友好）
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
     
     # 强制将日期列转换为 datetime.date 对象，将 NaT 转换为 None
@@ -536,18 +530,14 @@ else:
 
     st.divider()
     st.markdown("### 📊 单卡深度分析")
-    
-    if len(st.session_state.get('unique_cards', [])) == 0:
-         st.info("无卡牌可供分析。")
+    analysis_df = filtered_df.copy() 
+    if analysis_df.empty:
+        st.warning("无筛选结果。")
     else:
-        analysis_options = st.session_state['unique_cards']['display_label'].unique()
-        selected_variant_label = st.selectbox("请选择要分析的具体卡牌:", analysis_options, key='analysis_select')
-        
-        selected_card_number = st.session_state['unique_cards'][
-            st.session_state['unique_cards']['display_label'] == selected_variant_label
-        ]['card_number'].iloc[0]
-        
-        target_df = df[df['card_number'] == selected_card_number].sort_values("date_dt")
+        analysis_df['unique_label'] = analysis_df.apply(lambda x: f"{x['card_name']} [{x['card_number']}] ({x['card_set']}) - {x['rarity']}/{x['color']}", axis=1)
+        unique_variants = analysis_df['unique_label'].unique()
+        selected_variant = st.selectbox("请选择要分析的具体卡牌:", unique_variants)
+        target_df = analysis_df[analysis_df['unique_label'] == selected_variant].sort_values("date_dt")
         
         col_img, col_stat, col_chart = st.columns([1, 1, 2])
         with col_img:
