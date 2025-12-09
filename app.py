@@ -138,7 +138,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心功能：实现增量自动保存】
+# 【核心功能：实现增量自动保存，已修复日期非空约束问题】
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -179,46 +179,51 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
                 
-                # 获取该行未被编辑的原始日期，作为备用日期
+                # 获取原始日期对象
                 original_date_obj = displayed_df.iloc[filtered_index]['date']
+                
+                # --- 【日期非空修正核心逻辑】 ---
+                # 目标：确保 update_data 在发送给 Supabase 时始终包含 'date' 键，且值为非空字符串。
+                initial_date_str = datetime.now().strftime('%Y-%m-%d') # 终极回退值
+                
+                if original_date_obj:
+                    if isinstance(original_date_obj, date):
+                        initial_date_str = original_date_obj.strftime('%Y-%m-%d')
+                    elif isinstance(original_date_obj, str):
+                         # 假设原始字符串是有效的 YYYY-MM-DD
+                        initial_date_str = original_date_obj
+                
+                # 无论如何，先设置一个有效的日期值 (原始值或今天的值)
+                update_data['date'] = initial_date_str 
+                # --- 修正结束 ---
                 
                 # 遍历所有修改的列及其值
                 for col, value in changes.items():
                     
                     # 数据类型转换和清理
                     if col == 'date':
-                        # === 【日期非空约束修正】 ===
-                        final_date_str = None
+                        # 如果 date 被修改，则尝试使用编辑后的值进行转换和覆盖
+                        final_date_str_edit = None
                         
-                        # 1. 尝试使用编辑后的值 (value) 进行转换
                         if value:
                             if isinstance(value, (datetime, pd.Timestamp, date)): 
                                 try:
-                                    final_date_str = value.strftime('%Y-%m-%d')
+                                    final_date_str_edit = value.strftime('%Y-%m-%d')
                                 except:
                                     pass 
                             elif isinstance(value, str):
                                 # 检查字符串是否是有效的日期格式
                                 try:
                                     datetime.strptime(value, '%Y-%m-%d')
-                                    final_date_str = value
+                                    final_date_str_edit = value
                                 except:
                                     pass
                         
-                        # 2. 如果编辑后的值无效，则回填原始值 (original_date_obj)
-                        if final_date_str is None and original_date_obj:
-                            if isinstance(original_date_obj, date):
-                                final_date_str = original_date_obj.strftime('%Y-%m-%d')
-                            elif isinstance(original_date_obj, str):
-                                final_date_str = original_date_obj
+                        # 只有编辑后的值有效时才覆盖 update_data['date']
+                        if final_date_str_edit is not None:
+                            update_data[col] = final_date_str_edit 
+                        # 如果编辑值无效，将保留修正步骤中设置的 initial_date_str
 
-                        # 3. 终极回退：如果原始和编辑值都为空，使用今天的日期
-                        if final_date_str is None:
-                             final_date_str = datetime.now().strftime('%Y-%m-%d')
-                             
-                        update_data[col] = final_date_str
-                        # === 修正结束 ===
-                            
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -244,9 +249,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         # 捕获任何可能的错误，并设置错误消息，让主程序显示
         st.session_state['autosave_successful'] = True
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
-
-
-# 【已移除旧的 update_data_and_save 函数】
 
 
 # 网页抓取函数 (保持不变)
@@ -573,7 +575,6 @@ else:
             save_incremental_changes(display_df, editor_state)
         
         # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
-        # 否则，数据虽然保存在数据库中，但 data_editor 还会显示旧的修改状态。
         st.rerun()
 
     
