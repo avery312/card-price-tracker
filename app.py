@@ -187,12 +187,18 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 目标：确保 update_data 在发送给 Supabase 时始终包含 'date' 键，且值为非空字符串。
                 initial_date_str = datetime.now().strftime('%Y-%m-%d') # 终极回退值
                 
+                # 如果 original_date_obj 是有效的日期字符串或对象，尝试提取其 YYYY-MM-DD 格式
                 if original_date_obj:
                     if isinstance(original_date_obj, date):
                         initial_date_str = original_date_obj.strftime('%Y-%m-%d')
                     elif isinstance(original_date_obj, str):
                          # 假设原始字符串是有效的 YYYY-MM-DD
-                        initial_date_str = original_date_obj
+                        try:
+                           datetime.strptime(original_date_obj, '%Y-%m-%d')
+                           initial_date_str = original_date_obj
+                        except:
+                           # 如果不是有效格式，则保留回退值
+                           pass
                 
                 # 无论如何，先设置一个有效的日期值 (原始值或今天的值)
                 update_data['date'] = initial_date_str 
@@ -207,11 +213,13 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                         final_date_str_edit = None
                         
                         if value:
+                            # 1. 如果是 Streamlit DateColumn 返回的 date/datetime 对象
                             if isinstance(value, (datetime, pd.Timestamp, date)): 
                                 try:
                                     final_date_str_edit = value.strftime('%Y-%m-%d')
                                 except:
                                     pass 
+                            # 2. 如果是字符串 (例如用户在单元格中手动输入)
                             elif isinstance(value, str):
                                 # 检查字符串是否是有效的日期格式
                                 try:
@@ -516,10 +524,12 @@ else:
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 1. 清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
-    # 这一步是为了让 st.data_editor 能够正确显示 date_column (date对象或None)
-    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
-    display_df['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
+    # 【关键修正区域】：确保日期格式兼容 st.data_editor
+    # 1. 确保 'date' 字段的空值是 None (而不是 NaT 或 NaN)
+    #    - 这让 st.data_editor 更好地处理空/无效的日期输入
+    #    - 将有效日期转换为 'YYYY-MM-DD' 字符串，以增强与 st.data_editor 的兼容性
+    date_series = pd.to_datetime(display_df['date'], errors='coerce')
+    display_df['date'] = date_series.apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None)
     
     display_df = display_df.sort_values(by='id', ascending=False)
     
@@ -557,9 +567,9 @@ else:
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行 (允许删除现有行)
-            # 【关键修正】：显式设置 selection_mode 并移除 use_container_width=True
+            # 确保了多行选择模式，用于显示删除复选框
             selection_mode="multi-row",
-            # use_container_width=True 被移除，让 Streamlit 自动为复选框预留空间
+            # 移除 use_container_width=True 以确保复选框可见
         )
 
     # 【核心自动保存/删除逻辑】
