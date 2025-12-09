@@ -3,5 +3,5 @@ pandas
 requests
 beautifulsoup4
 numpy
-# Supabase 客户端库
-supabase-py
+# Sup修正：使用正确的 Supabase 客户端库名称
+supabase
