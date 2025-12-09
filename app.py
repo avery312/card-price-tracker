@@ -463,7 +463,11 @@ else:
     df['color'] = df['color'].fillna('') 
     df['card_set'] = df['card_set'].fillna('') 
     df['card_number'] = df['card_number'].fillna('') 
+    
+    # 【修正区域】：确保 price 和 quantity 的类型一致性 (最关键的修正)
+    df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0.0).astype(float)
     df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(1).astype(int) 
+    
     df = df.dropna(subset=['date_dt']) 
     
     # --- 🔍 多维度筛选 ---
@@ -524,10 +528,7 @@ else:
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 【关键修正区域】：确保日期格式兼容 st.data_editor
-    # 1. 确保 'date' 字段的空值是 None (而不是 NaT 或 NaN)
-    #    - 这让 st.data_editor 更好地处理空/无效的日期输入
-    #    - 将有效日期转换为 'YYYY-MM-DD' 字符串，以增强与 st.data_editor 的兼容性
+    # 1. 确保日期格式兼容 st.data_editor (保持上次的修复)
     date_series = pd.to_datetime(display_df['date'], errors='coerce')
     display_df['date'] = date_series.apply(lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else None)
     
