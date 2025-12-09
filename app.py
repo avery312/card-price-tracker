@@ -28,7 +28,6 @@ if 'submitted_card_name' not in st.session_state:
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
     
-# 新增 Session state for autosave messages (用于显示自动保存结果)
 if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
@@ -138,10 +137,12 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心功能：实现增量自动保存】
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
+    - displayed_df 是 data_editor 当前显示的 (已筛选且**已重置索引**) 的 DataFrame。
+    - editor_state 包含被编辑和被删除的行索引 (基于 0-based 连续索引)。
     """
     supabase = connect_supabase()
     if not supabase: return
@@ -153,15 +154,13 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
-            # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
-            # 注意：这里的索引是相对于 displayed_df 的
-            if not displayed_df.empty and len(displayed_df) >= max(deleted_indices):
-                 ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
-                 
-                 if ids_to_delete:
-                    deleted_count = len(ids_to_delete)
-                    # 使用 Supabase 的 `in` 过滤器进行批量删除
-                    supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
+            # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
+            ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+            
+            if ids_to_delete:
+                deleted_count = len(ids_to_delete)
+                # 使用 Supabase 的 `in` 过滤器进行批量删除
+                supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
         # 2. 处理修改操作 (UPSERT/UPDATE)
         edited_rows = editor_state.get("edited_rows", {})
@@ -172,10 +171,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 检查这个索引是否同时被删除，如果是，则跳过（删除优先）
                 if filtered_index in deleted_indices:
                     continue
-                
-                # 确保索引有效
-                if filtered_index >= len(displayed_df):
-                    continue
                     
                 # 获取原始 ID，它是更新记录的唯一标识
                 row_id = displayed_df.iloc[filtered_index]['id']
@@ -183,7 +178,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期对象
+                # 获取该行未被编辑的原始日期，作为备用日期
                 original_date_obj = displayed_df.iloc[filtered_index]['date']
                 
                 # --- 【日期非空修正核心逻辑】 ---
@@ -195,7 +190,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     elif isinstance(original_date_obj, str):
                         initial_date_str = original_date_obj
                 
-                # 无论如何，先设置一个有效的日期值 (原始值或今天的值)
+                # 无论如何，先设置一个有效的日期值
                 update_data['date'] = initial_date_str 
                 # --- 修正结束 ---
                 
@@ -204,9 +199,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     
                     # 数据类型转换和清理
                     if col == 'date':
-                        # 如果 date 被修改，则尝试使用编辑后的值进行转换和覆盖
                         final_date_str_edit = None
-                        
                         if value:
                             if isinstance(value, (datetime, pd.Timestamp, date)): 
                                 try:
@@ -504,30 +497,30 @@ else:
     # --- 📝 数据编辑区域 ---
     
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
-    st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**自动保存**您修改的内容。")
+    st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
-    # 【修复后的提示】：现在最左侧的索引编号就是选择区域
-    st.caption("✅ **多行删除提示**：要删除单行或多行，请**点击最左侧的行编号**进行选择，然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
+    st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
-    display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
     # 1. 清理日期类型
-    date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
-    display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
+    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
+    display_df['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
     
-    display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
+    display_df = display_df.sort_values(by='id', ascending=False)
     
     # 2. 强制重置索引
-    display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
+    display_df = display_df.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
     # 确保 ID 列在最前面
-    display_df_for_editor = display_df_for_editor[['id'] + FINAL_DISPLAY_COLUMNS]
+    display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
 
-    if display_df_for_editor.empty:
+    if display_df.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
+        # 确保 session state 中存在 data_editor 键，防止后续逻辑报错
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
         edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
@@ -545,27 +538,33 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 关键修复: 移除 hide_index=True，恢复左侧行号用于选择
-        edited_df = st.data_editor(
-            display_df_for_editor, 
-            key="data_editor",
-            # hide_index=True, <-- 移除此行
+        # ⚠️ 注意：这里我们使用了一个 key="data_editor" 捕获编辑状态，但没有使用 edited_df = st.data_editor(...) 的返回值
+        st.data_editor(
+            display_df, 
+            key="data_editor", # 核心：将编辑状态存入 session state
+            hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="fixed", 
-            use_container_width=True 
+            num_rows="dynamic", # 允许删除 (实际上是 dynamic 开启了增删功能，但通过代码逻辑我们只处理删改)
+            # 确保了多行选择模式，用于显示删除复选框
+            selection_mode="multi-row",
         )
 
-    # 【核心自动保存逻辑】
+    # 【核心自动保存/删除逻辑】
     editor_state = st.session_state.get("data_editor")
     
+    # 检查是否有编辑变动或删除操作
+    # 当用户在单元格完成编辑或删除行后，st.data_editor 会自动更新 session state 并触发 rerun
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         
-        st.info("🔄 检测到修改，正在自动增量保存...")
+        # 立即进行保存，取代手动确认按钮
+        st.info("🔄 检测到修改或删除，正在自动增量保存...")
         
         with st.spinner("🚀 数据增量自动保存中..."):
-            save_incremental_changes(display_df_for_editor, editor_state)
+            # 调用增量保存函数
+            save_incremental_changes(display_df, editor_state)
         
+        # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
         st.rerun()
 
     
@@ -611,10 +610,11 @@ else:
                 avg_price = target_df['price'].mean()
                 
                 max_price = target_df['price'].max()
-                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
+                # 确保在取日期时，df不是空的，且日期是有效的
+                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0] if not target_df[target_df['price'] == max_price].empty else "N/A"
                 
                 min_price = target_df['price'].min()
-                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
+                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0] if not target_df[target_df['price'] == min_price].empty else "N/A"
 
                 c1, c2 = st.columns(2)
                 c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
