@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-# 【修复 1】：明确导入 datetime 和 date 对象，用于日期操作
+# 明确导入 datetime 和 date 对象
 from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
@@ -28,7 +28,6 @@ if 'submitted_card_name' not in st.session_state:
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
     
-# 【新增】：用于保存筛选条件，防止自动保存后输入框被清空
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
     
@@ -36,8 +35,7 @@ if 'search_name_input' not in st.session_state:
     st.session_state['search_name_input'] = ""
 if 'search_set_input' not in st.session_state:
     st.session_state['search_set_input'] = ""
-
-# 【新增】：用于显示自动保存结果
+    
 if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
@@ -49,7 +47,6 @@ def clear_all_data():
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
 
-# 【新增】：清空筛选逻辑
 def clear_search_filters():
     # 强制清空筛选输入框的状态
     st.session_state["search_name_input"] = ""
@@ -134,7 +131,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心修改】：增量保存函数，用于自动保存 (替代了 update_data_and_save)
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -152,6 +149,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # 此处支持多行索引，实现多行删除
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -165,28 +163,24 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             data_to_upsert = []
             
             for filtered_index, changes in edited_rows.items():
-                # 如果该行同时被删除，则跳过（删除优先）
+                # 检查这个索引是否同时被删除，如果是，则跳过（删除优先）
                 if filtered_index in deleted_indices:
                     continue
                     
                 # 获取原始 ID，它是更新记录的唯一标识
                 row_id = displayed_df.iloc[filtered_index]['id']
                 
-                # 从原始显示的行数据开始
-                original_row = displayed_df.iloc[filtered_index].to_dict()
+                # 从原始显示的行数据开始 (仅用于获取未修改的列的旧值，但在此增量更新逻辑中，我们只关心ID和修改的值)
                 
-                # 应用所有修改
+                # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
                 
-                for col in NEW_EXPECTED_COLUMNS:
-                    if col == 'id':
-                        continue 
-                        
-                    # 优先使用 changes 中的值，如果没有则使用 original_row 中的值
-                    value = changes.get(col, original_row.get(col)) 
+                # 遍历所有修改的列及其值
+                for col, value in changes.items():
                     
                     # 数据类型转换和清理
                     if col == 'date':
+                        # 兼容 date 和 datetime 对象，并转换为 Supabase 需要的字符串格式
                         if isinstance(value, (datetime, pd.Timestamp, date)): 
                             try:
                                 update_data[col] = value.strftime('%Y-%m-%d')
@@ -206,11 +200,13 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     else:
                         update_data[col] = str(value) if pd.notna(value) else ""
                         
+                # 将包含 ID 和修改值的字典添加到待更新列表
                 data_to_upsert.append(update_data)
             
             if data_to_upsert:
                 updated_count = len(data_to_upsert)
                 # Supabase UPSERT (根据主键 'id' 自动更新或插入)
+                # 核心：由于 data_to_upsert 只包含 ID 和修改的列，其他列不会被影响。
                 supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
         
@@ -393,7 +389,7 @@ with st.sidebar:
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 【新增】：检查并显示自动保存结果
+# 检查并显示自动保存结果
 if st.session_state.get('autosave_successful'):
     if "❌" in st.session_state['autosave_message']:
         st.error(st.session_state['autosave_message'])
@@ -431,13 +427,10 @@ else:
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
     
     with col_s1: 
-        # 【修正】：使用 session state 变量保持状态
         search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
     with col_s2: 
-        # 【修正】：使用 session state 变量保持状态
         search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
     with col_s3: 
-        # 【修正】：使用 session state 变量保持状态
         date_range = st.date_input(
             "搜索 时间范围", 
             value=st.session_state.get("date_range_input", []), 
@@ -472,8 +465,9 @@ else:
     # --- 📝 数据编辑区域 ---
     
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
-    st.caption("✨ **自动保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将自动保存您的修改或删除。")
+    st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
+    # 【多选删除提示】：此提示保持不变，因为功能已被保留
     st.caption("ℹ️ **多行删除提示**：要删除单行或多行，请**点击最左侧的行编号**进行选择（行编号现在已可见），然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
@@ -490,7 +484,6 @@ else:
 
     if display_df_for_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
-        # 即使没有数据，也要确保 data_editor 状态存在，否则下面的检查会失败
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
         edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
@@ -508,10 +501,11 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 【修复/修改】：移除 hide_index=True 允许行选择和删除；设置 num_rows="fixed" 保证更新/删除的稳定性。
+        # 关键：移除 hide_index=True 保证多选删除功能正常，num_rows="fixed" 保证编辑和删除的稳定性。
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
+            # hide_index=True, <-- 已移除，保留多选删除
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
@@ -523,12 +517,10 @@ else:
     # 检查是否有编辑变动或删除操作
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         
-        # 移除警告和按钮，直接触发保存
         st.info("🔄 检测到修改，正在自动增量保存...")
         
         with st.spinner("🚀 数据增量自动保存中..."):
             # 调用增量保存函数
-            # 传递原始显示的 DataFrame，因为索引是相对于这个 DataFrame 的
             save_incremental_changes(display_df_for_editor, editor_state)
         
         # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
