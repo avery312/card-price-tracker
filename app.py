@@ -357,29 +357,16 @@ else:
     
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
-    
-    # 【修改 1 修复】：增加第四列用于放置“清空筛选”按钮，并添加显式 key
-    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
-    
-    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索", key="search_name_input") 
-    with col_s2: search_set = st.text_input("搜索 系列/版本", key="search_set_input")
-    with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期", key="date_range_input")
-    
-    with col_s4: 
-        st.write(" ") # 增加空行，使按钮与输入框对齐
-        if st.button("清空筛选", key="clear_filters_btn", use_container_width=True):
-            # 清除 session state 中与筛选输入框绑定的值
-            if "search_name_input" in st.session_state:
-                st.session_state["search_name_input"] = ""
-            if "search_set_input" in st.session_state:
-                st.session_state["search_set_input"] = ""
-            if "date_range_input" in st.session_state:
-                # date_input 的 value 是一个列表或元组，清空它
-                st.session_state["date_range_input"] = [] 
-            st.rerun() # 强制重新执行脚本，显示所有数据
+    col_s1, col_s2, col_s3 = st.columns(3) 
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索") 
+    with col_s2: search_set = st.text_input("搜索 系列/版本")
+    with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
 
     # 筛选逻辑
     filtered_df = df.copy()
+    
+    # 【修改 1】：确保搜索内容为空时显示所有数据。
+    # 当 st.text_input 为空时，search_name 为 ""，条件 if search_name: 为 False，自动跳过筛选，显示所有数据。
     if search_name:
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
         search_target = (
@@ -397,7 +384,6 @@ else:
 
     # 准备用于展示和编辑的 DataFrame
     display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
-    # 确保 data_editor の date 列为 date 对象
     display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce').dt.date 
 
     # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
@@ -410,13 +396,13 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 【列宽保持不变】：再缩小1/3，总宽度约为770px
+    # 【核心修正】：再缩小1/3，总宽度约为770px
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True, width=50), 
         "date": st.column_config.DateColumn("录入时间", width=80), 
         "card_number": st.column_config.Column("编号", width=70),
-        "card_name": st.column_config.Column("卡名", width=200), # 缩小到 200
-        "card_set": st.column_config.Column("系列", width=100), # 缩小到 100
+        "card_name": st.column_config.Column("卡名", width=200), 
+        "card_set": st.column_config.Column("系列", width=100), 
         "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
         "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
         "rarity": st.column_config.Column("等级", width=50), 
@@ -443,7 +429,6 @@ else:
         if st.button("💾 确认并保存所有修改", type="primary"):
             with st.spinner("🚀 数据即时保存中..."):
                 update_data_and_save(final_df_to_save)
-            # 强制重新执行脚本
             st.rerun()
 
     
@@ -492,15 +477,23 @@ else:
                 
                 min_price = target_df['price'].min()
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
+                
+                avg_price = target_df['price'].mean()
 
-                st.metric("最近成交价", f"¥{curr_price:,.0f}")
+                # 【修改 2】：优化价格展示，使用 st.metric 和 st.columns
+                c1, c2 = st.columns(2)
+                c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
+                c2.metric("📦 总库存", f"{total_quantity:,} 张")
                 
-                st.markdown(f"**📈 历史最高**：¥{max_price:,.0f} (于 **{max_price_date}** 录入)")
-                st.markdown(f"**📉 历史最低**：¥{min_price:,.0f} (于 **{min_price_date}** 录入)")
+                st.divider()
                 
-                st.metric("💰 平均价格", f"¥{target_df['price'].mean():,.2f}")
-                st.metric("📦 总库存数量", f"{total_quantity:,} 张")
-                st.write(f"共 {len(target_df)} 条记录")
+                c3, c4 = st.columns(2)
+                c3.metric("📈 历史最高", f"¥{max_price:,.0f}", f"{max_price_date}")
+                c4.metric("📉 历史最低", f"¥{min_price:,.0f}", f"{min_price_date}")
+                
+                st.metric("📊 平均价格", f"¥{avg_price:,.2f}")
+                
+                st.caption(f"共 {len(target_df)} 条记录")
             else:
                 st.info("无数据统计。")
 
@@ -512,30 +505,34 @@ else:
             else:
                 st.info("需至少两条记录绘制走势")
         
-        # 【修改 2 需求】：新增最近10次录入记录表格
-        st.markdown("#### 📝 最近10次录入记录")
-        
-        # 1. 重新排序为降序，获取最新记录
-        latest_entries_df = target_df.sort_values("date_dt", ascending=False)
-        
-        # 2. 选择前10条记录
-        latest_10 = latest_entries_df.head(10)
-        
-        if not latest_10.empty:
-            # 3. 提取和格式化数据
-            display_latest_10 = latest_10[['date', 'price']].copy()
-            display_latest_10.rename(columns={'date': '录入日期', 'price': '价格 (¥)'}, inplace=True)
+        # 【修改 2 补充】：新增最近10次录入记录表格
+        if not target_df.empty:
+            st.markdown("#### 🕒 最近10次录入记录")
             
-            # 手动格式化价格为字符串，以便在 st.dataframe 中显示货币符号
-            display_latest_10['价格 (¥)'] = display_latest_10['价格 (¥)'].apply(lambda x: f"¥{x:,.0f}")
+            # 获取最近10条记录，按时间倒序
+            recent_10_df = target_df.sort_values("date_dt", ascending=False).head(10)
             
+            # 选择要显示的列
+            recent_display = recent_10_df[['date', 'price', 'quantity']].copy()
+            
+            # 重命名列以更友好地显示
+            recent_display.rename(columns={
+                'date': '录入日期',
+                'price': '价格 (¥)',
+                'quantity': '数量 (张)'
+            }, inplace=True)
+            
+            # 显示表格
             st.dataframe(
-                display_latest_10, 
+                recent_display, 
                 hide_index=True, 
                 use_container_width=True,
+                column_config={
+                    "价格 (¥)": st.column_config.NumberColumn(format="¥%d"),
+                    "数量 (张)": st.column_config.NumberColumn(format="%d")
+                }
             )
-        else:
-            st.info("无记录可供分析。")
+
     
     # --- 📥 数据导出 (用于备份或迁移) ---
     st.divider()
