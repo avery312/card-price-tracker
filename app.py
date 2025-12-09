@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import re 
 import numpy as np 
+# 导入 Supabase 客户端库
 from supabase import create_client, Client 
 import time 
 
@@ -30,7 +31,7 @@ if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
-    
+
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
 if 'search_name_input' not in st.session_state:
@@ -80,6 +81,7 @@ def load_data():
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
+        # 直接读取数据
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
         
         df = pd.DataFrame(response.data)
@@ -145,6 +147,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+            
             if ids_to_delete:
                 deleted_count = len(ids_to_delete)
                 supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
@@ -158,28 +161,42 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 if filtered_index in deleted_indices:
                     continue
                 
-                # 检查索引是否越界 (安全检查)
+                # 安全检查：防止索引越界
                 if filtered_index >= len(displayed_df):
                     continue
                     
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期 (字符串形式)
-                original_date_str = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期 (Timestamp 对象)
+                original_date_ts = displayed_df.iloc[filtered_index]['date']
                 
                 # 设置日期回退值
                 initial_date_str = datetime.now().strftime('%Y-%m-%d')
-                if original_date_str:
-                     initial_date_str = original_date_str
+                if pd.notna(original_date_ts):
+                    try:
+                        initial_date_str = original_date_ts.strftime('%Y-%m-%d')
+                    except:
+                        pass
                 
                 update_data['date'] = initial_date_str 
                 
                 for col, value in changes.items():
                     if col == 'date':
-                        # 编辑器返回的 value 可能是字符串 YYYY-MM-DD
+                        final_date_str_edit = None
                         if value:
-                             update_data[col] = value
+                            if isinstance(value, str):
+                                final_date_str_edit = value
+                            # 处理 Timestamp 或 datetime 对象
+                            elif isinstance(value, (datetime, pd.Timestamp, date)):
+                                try:
+                                    final_date_str_edit = value.strftime('%Y-%m-%d')
+                                except:
+                                    pass
+                        
+                        if final_date_str_edit:
+                            update_data[col] = final_date_str_edit 
+
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -424,18 +441,17 @@ else:
     st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
     st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
     
-    # 【核心修复】：直接使用 filtered_df 的 copy
-    # 先将 date_dt 转换为字符串，再 drop date_dt
-    # 这样确保了 date 列是纯净的字符串类型
-    display_df = filtered_df.copy()
-    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d')
-    display_df = display_df.drop(columns=['date_dt'], errors='ignore')
+    # 核心修复 1: 准备数据，使用 datetime64[ns] 类型，这是 Streamlit DateColumn 兼容性最好的类型
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
     
-    # 强制将所有文本列转换为字符串，防止 None 或 nan 导致的类型错误
-    text_cols = ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']
-    for col in text_cols:
-        display_df[col] = display_df[col].astype(str).replace('nan', '')
-
+    # 强制将日期列转换为 Pandas Timestamp (datetime64[ns])
+    # errors='coerce' 会将无效解析转换为 NaT (Not a Time)
+    display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce')
+    
+    # 强制将其他关键列转换为兼容类型
+    display_df['card_number'] = display_df['card_number'].astype(str)
+    display_df['card_name'] = display_df['card_name'].astype(str)
+    
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
@@ -460,14 +476,14 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
+        # 移除 selection_mode="multi-row" 以兼容旧版本
         edited_df = st.data_editor(
             display_df, 
             key="data_editor",
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="dynamic", # 启用删除
-            # 移除 selection_mode 以兼容性
+            num_rows="dynamic",
             use_container_width=True 
         )
 
@@ -537,7 +553,7 @@ else:
             st.dataframe(recent_display, hide_index=True, use_container_width=True, column_config={"价格 (¥)": st.column_config.NumberColumn(format="¥%d"), "数量 (张)": st.column_config.NumberColumn(format="%d")})
     
     st.divider()
-    st.markdown("### 📥 数据导出 (用于备份或迁移)")
+    st.markdown("### 📥 数据导出 (用于备份或迁移) ")
     if not df.empty:
         csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button(label="下载完整的卡牌数据 (CSV)", data=csv_data, file_name='card_data_full_export.csv', mime='text/csv')
