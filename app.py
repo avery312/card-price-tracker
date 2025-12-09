@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-# 【修正】明确导入 datetime 和 date 对象
+# 明确导入 datetime 和 date 对象
 from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
@@ -28,13 +28,13 @@ if 'submitted_card_name' not in st.session_state:
 if 'last_entry_date' not in st.session_state:
     st.session_state['last_entry_date'] = datetime.now().date() 
     
-# 【新增】Session state for autosave messages
+# 新增 Session state for autosave messages
 if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
     st.session_state['autosave_message'] = ""
     
-# 【新增】用于保持筛选状态的变量（因为原代码中删除了它们）
+# 用于保持筛选状态的变量
 if 'date_range_input' not in st.session_state:
     st.session_state['date_range_input'] = [] 
 if 'search_name_input' not in st.session_state:
@@ -49,7 +49,6 @@ def clear_all_data():
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
 
-# 【新增】用于清空筛选的 action
 def clear_search_filters_action():
     """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
     st.session_state["search_name_input"] = ""
@@ -78,7 +77,6 @@ def connect_supabase() -> Client:
         st.error(f"无法连接 Supabase 数据库。请检查 secrets.toml 配置。错误: {e}")
         return None
 
-# 🔑 关键修复：load_data 不再使用 @st.cache_data
 def load_data():
     """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
@@ -140,7 +138,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心替换】增量保存函数，用于自动保存
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -336,10 +334,8 @@ suffix = str(st.session_state['form_key_suffix'])
 
 # --- 侧边栏：录入 ---
 with st.sidebar:
-    # 【侧边栏滚动修复】：当提交成功后，在顶部显示瞬时消息，强制滚动到顶部
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
-        # 在侧边栏顶部显示一个瞬时的成功消息。
         st.success(f"✅ **{card_name}** 录入成功！", icon="🎉") 
         
     st.header("🌐 网页自动填充")
@@ -384,7 +380,6 @@ with st.sidebar:
         price_in = st.number_input("6. 价格 (¥)", min_value=0.0, step=10.0, key=f"price_in_form_{suffix}")
         quantity_in = st.number_input("7. 数量 (张)", min_value=1, step=1, key=f"quantity_in_form_{suffix}")
         
-        # 【核心修改】：使用 session state 变量作为 value，保留上一次的选择
         date_in = st.date_input(
             "8. 录入日期", 
             value=st.session_state['last_entry_date'],
@@ -403,7 +398,6 @@ with st.sidebar:
             except: 
                 st.warning("无法加载该链接的图片。")
 
-        # 使用 st.form_submit_button 替换 st.button
         submitted = st.form_submit_button("提交录入", type="primary")
 
     if submitted:
@@ -411,26 +405,23 @@ with st.sidebar:
             with st.spinner("🚀 数据即时保存中..."):
                 add_card(name_in, card_number_in, set_in, price_in, quantity_in, rarity_in, color_in, date_in, final_image_path)
             
-            # 【核心修改】：提出成功后，将本次用户选择的日期 date_in 存入 session state
             st.session_state['last_entry_date'] = date_in
 
-            # 清除侧边栏输入状态
             st.session_state['scrape_result'] = {}
             st.session_state['form_key_suffix'] += 1
             
-            # 【关键修改 2】：设置成功状态和卡牌名
             st.session_state['submission_successful'] = True
             st.session_state['submitted_card_name'] = name_in
             
-            # 强制重新执行脚本
             st.rerun() 
         else:
-            st.error("卡牌名称不能为空！')
+            # 【修正】修复未闭合的字符串错误
+            st.error("卡牌名称不能为空！")
 
 # --- 主页面 ---
 st.title("📈 卡牌历史与价格分析 Pro")
 
-# 【新增】检查并显示自动保存结果
+# 检查并显示自动保存结果
 if st.session_state.get('autosave_successful'):
     if "❌" in st.session_state['autosave_message']:
         st.error(st.session_state['autosave_message'])
@@ -439,24 +430,20 @@ if st.session_state.get('autosave_successful'):
         
     st.session_state['autosave_successful'] = False
     st.session_state['autosave_message'] = ""
-
-# 【关键修改 3】：在主页面顶部检查并显示成功消息，迫使页面回到顶部
+    
+# 检查并显示录入结果
 if st.session_state.get('submission_successful'):
     card_name = st.session_state.get('submitted_card_name', '一张卡牌')
-    # 显示成功消息，该消息将成为页面顶部的新元素
     st.success(f"✅ 已成功录入: **{card_name}**。页面已自动返回顶部。")
-    # 清除状态，防止在后续操作中反复显示
     st.session_state['submission_successful'] = False
     st.session_state['submitted_card_name'] = ""
 
-
-# 🔑 load_data() 每次 rerun 都会执行数据库读取
 df = load_data() 
 
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
-    # 预处理 (与之前代码保持一致)
+    # 预处理
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -468,32 +455,34 @@ else:
     
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
+    
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
+    
     with col_s1: 
-        # 【修正】使用 session state 变量
         search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
     with col_s2: 
-        # 【修正】使用 session state 变量
         search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
     with col_s3: 
-        # 【修正】使用 session state 变量
         date_range = st.date_input(
             "搜索 时间范围", 
             value=st.session_state.get("date_range_input", []), 
             help="请选择开始和结束日期", 
             key="date_range_input"
         )
+    
     with col_s4: 
         st.write(" ") 
+        # 使用回调函数清空筛选状态
         st.button(
             "清空筛选", 
             key="clear_filters_btn", 
             use_container_width=True,
-            on_click=clear_search_filters_action # 使用回调函数
-        )
+            on_click=clear_search_filters_action
+        ) 
 
-    # 筛选逻辑
+    # --- 筛选逻辑 (用于编辑和分析) ---
     filtered_df = df.copy()
+    
     if search_name:
         cleaned_search_name = normalize_text_for_fuzzy_search(search_name)
         search_target = (
@@ -507,66 +496,75 @@ else:
     if search_set:
         filtered_df = filtered_df[filtered_df['card_set'].str.contains(search_set, case=False, na=False)]
     if len(date_range) == 2:
+        # 确保 date_range 包含两个日期
         filtered_df = filtered_df[(filtered_df['date_dt'].dt.date >= date_range[0]) & (filtered_df['date_dt'].dt.date <= date_range[1])]
 
-    # 准备用于展示和编辑的 DataFrame
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
-    # 确保 data_editor の date 列为 date 对象
-    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
-    display_df['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
-
-    # 核心排序逻辑：根据 ID 从大到小（最新的在最上面）进行初始排序
-    display_df = display_df.sort_values(by='id', ascending=False)
     
-    # 强制重置索引：确保索引连续，供增量保存逻辑使用
-    display_df = display_df.reset_index(drop=True) 
+    # --- 📝 数据编辑区域 ---
     
-    st.markdown("### 📝 数据编辑（自动增量保存模式）") # 标题更新
+    st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**自动保存**您修改的内容。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
     st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
+    
+    # 准备用于展示和编辑的 DataFrame (使用筛选结果)
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
+    # 1. 清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
+    # 这一步是为了让 st.data_editor 能够正确显示 date_column (date对象或None)
+    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
+    display_df['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
+    
+    display_df = display_df.sort_values(by='id', ascending=False)
+    
+    # 2. 强制重置索引：确保索引连续
+    display_df = display_df.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
+    # 确保 ID 列在最前面
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
-    
-    column_config_dict = {
-        "id": st.column_config.Column("ID", disabled=True, width=50), 
-        "date": st.column_config.DateColumn("录入时间", width=80), 
-        "card_number": st.column_config.Column("编号", width=70),
-        "card_name": st.column_config.Column("卡名", width=200), # 缩小到 200
-        "card_set": st.column_config.Column("系列", width=100), # 缩小到 100
-        "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
-        "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
-        "rarity": st.column_config.Column("等级", width=50), 
-        "color": st.column_config.Column("颜色", width=50), 
-        "image_url": st.column_config.ImageColumn("卡图", width=50),
-    }
-    
-    # 【注意】我们使用 edited_df 的内容来更新显示，但使用 display_df 和 editor_state 来进行数据库操作
-    edited_df = st.data_editor(
-        display_df,
-        key="data_editor",
-        hide_index=True,
-        column_order=['id'] + FINAL_DISPLAY_COLUMNS,
-        column_config=column_config_dict,
-        num_rows="fixed", # 固定行数，不允许用户在表格中添加新行
-        use_container_width=True # 使用容器宽度，使表格更宽敞
-    )
+
+    if display_df.empty:
+        st.info("没有找到符合筛选条件的数据可供编辑。")
+        # 确保 session state 中存在 data_editor 键，防止后续逻辑报错
+        if "data_editor" not in st.session_state:
+            st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
+    else:
+        column_config_dict = {
+            "id": st.column_config.Column("ID", disabled=True, width=50), 
+            "date": st.column_config.DateColumn("录入时间", width=80), 
+            "card_number": st.column_config.Column("编号", width=70),
+            "card_name": st.column_config.Column("卡名", width=200), 
+            "card_set": st.column_config.Column("系列", width=100), 
+            "price": st.column_config.NumberColumn("价格 (¥)", format="¥%d", width=70),
+            "quantity": st.column_config.NumberColumn("数量 (张)", format="%d", width=50),
+            "rarity": st.column_config.Column("等级", width=50), 
+            "color": st.column_config.Column("颜色", width=50), 
+            "image_url": st.column_config.ImageColumn("卡图", width=50),
+        }
+        
+        edited_df = st.data_editor(
+            display_df, 
+            key="data_editor",
+            hide_index=True,
+            column_order=['id'] + FINAL_DISPLAY_COLUMNS,
+            column_config=column_config_dict,
+            num_rows="fixed", # 仅允许修改现有行和删除行
+            use_container_width=True 
+        )
 
     # 【核心自动保存逻辑】
     editor_state = st.session_state.get("data_editor")
-
+    
     # 检查是否有编辑变动或删除操作
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         
         st.info("🔄 检测到修改，正在自动增量保存...")
         
         with st.spinner("🚀 数据增量自动保存中..."):
-            # 调用增量保存函数。注意：我们传递的是重置索引后的原始 DataFrame (display_df)
-            # 以及 data_editor 的状态 (editor_state)
-            save_incremental_changes(display_df, editor_state) 
+            # 调用增量保存函数
+            save_incremental_changes(display_df, editor_state)
         
         # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
         st.rerun()
@@ -574,7 +572,7 @@ else:
     
     st.divider()
     
-    # --- 📊 单卡深度分析面板 ---
+    # --- 📊 单卡深度分析面板 (使用筛选结果) ---
     st.markdown("### 📊 单卡深度分析")
     
     analysis_df = filtered_df.copy() 
@@ -619,7 +617,6 @@ else:
                 
                 min_price = target_df['price'].min()
                 min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0] if not target_df[target_df['price'] == min_price].empty else "N/A"
-
 
                 c1, c2 = st.columns(2)
                 c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
