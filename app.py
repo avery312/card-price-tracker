@@ -357,10 +357,26 @@ else:
     
     # --- 🔍 多维度筛选 ---
     st.markdown("### 🔍 多维度筛选")
-    col_s1, col_s2, col_s3 = st.columns(3) 
-    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索") 
-    with col_s2: search_set = st.text_input("搜索 系列/版本")
-    with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期")
+    
+    # 【修改 1 修复】：增加第四列用于放置“清空筛选”按钮，并添加显式 key
+    col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
+    
+    with col_s1: search_name = st.text_input("搜索 名称/编号/ID", help="支持模糊搜索", key="search_name_input") 
+    with col_s2: search_set = st.text_input("搜索 系列/版本", key="search_set_input")
+    with col_s3: date_range = st.date_input("搜索 时间范围", value=[], help="请选择开始和结束日期", key="date_range_input")
+    
+    with col_s4: 
+        st.write(" ") # 增加空行，使按钮与输入框对齐
+        if st.button("清空筛选", key="clear_filters_btn", use_container_width=True):
+            # 清除 session state 中与筛选输入框绑定的值
+            if "search_name_input" in st.session_state:
+                st.session_state["search_name_input"] = ""
+            if "search_set_input" in st.session_state:
+                st.session_state["search_set_input"] = ""
+            if "date_range_input" in st.session_state:
+                # date_input 的 value 是一个列表或元组，清空它
+                st.session_state["date_range_input"] = [] 
+            st.rerun() # 强制重新执行脚本，显示所有数据
 
     # 筛选逻辑
     filtered_df = df.copy()
@@ -394,7 +410,7 @@ else:
     
     display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
     
-    # 【核心修正】：再缩小1/3，总宽度约为770px
+    # 【列宽保持不变】：再缩小1/3，总宽度约为770px
     column_config_dict = {
         "id": st.column_config.Column("ID", disabled=True, width=50), 
         "date": st.column_config.DateColumn("录入时间", width=80), 
@@ -495,6 +511,31 @@ else:
                 st.line_chart(target_df, x="date_dt", y="price", color="#FF4B4B")
             else:
                 st.info("需至少两条记录绘制走势")
+        
+        # 【修改 2 需求】：新增最近10次录入记录表格
+        st.markdown("#### 📝 最近10次录入记录")
+        
+        # 1. 重新排序为降序，获取最新记录
+        latest_entries_df = target_df.sort_values("date_dt", ascending=False)
+        
+        # 2. 选择前10条记录
+        latest_10 = latest_entries_df.head(10)
+        
+        if not latest_10.empty:
+            # 3. 提取和格式化数据
+            display_latest_10 = latest_10[['date', 'price']].copy()
+            display_latest_10.rename(columns={'date': '录入日期', 'price': '价格 (¥)'}, inplace=True)
+            
+            # 手动格式化价格为字符串，以便在 st.dataframe 中显示货币符号
+            display_latest_10['价格 (¥)'] = display_latest_10['价格 (¥)'].apply(lambda x: f"¥{x:,.0f}")
+            
+            st.dataframe(
+                display_latest_10, 
+                hide_index=True, 
+                use_container_width=True,
+            )
+        else:
+            st.info("无记录可供分析。")
     
     # --- 📥 数据导出 (用于备份或迁移) ---
     st.divider()
