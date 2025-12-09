@@ -149,7 +149,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
-            # 此处支持多行索引，实现多行删除
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -169,8 +168,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     
                 # 获取原始 ID，它是更新记录的唯一标识
                 row_id = displayed_df.iloc[filtered_index]['id']
-                
-                # 从原始显示的行数据开始 (仅用于获取未修改的列的旧值，但在此增量更新逻辑中，我们只关心ID和修改的值)
                 
                 # 创建一个只包含 ID 和所有修改列的数据字典
                 update_data = {'id': int(row_id)}
@@ -206,7 +203,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             if data_to_upsert:
                 updated_count = len(data_to_upsert)
                 # Supabase UPSERT (根据主键 'id' 自动更新或插入)
-                # 核心：由于 data_to_upsert 只包含 ID 和修改的列，其他列不会被影响。
                 supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
         
@@ -467,8 +463,8 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
-    # 【多选删除提示】：此提示保持不变，因为功能已被保留
-    st.caption("ℹ️ **多行删除提示**：要删除单行或多行，请**点击最左侧的行编号**进行选择（行编号现在已可见），然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
+    # 【多选删除提示】：已更新，明确提到复选框
+    st.caption("✅ **多行删除提示**：现在，表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
@@ -501,14 +497,15 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 关键：移除 hide_index=True 保证多选删除功能正常，num_rows="fixed" 保证编辑和删除的稳定性。
+        # 关键修改：新增 selection_mode="multi-row" 启用左侧的多选复选框
         edited_df = st.data_editor(
             display_df_for_editor, 
             key="data_editor",
-            # hide_index=True, <-- 已移除，保留多选删除
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
             num_rows="fixed", # 仅允许修改现有行和删除行
+            selection_mode="multi-row", # 【修正】启用多选模式，显示左侧的复选框
+            use_container_width=True 
         )
 
     # 【核心自动保存逻辑】
