@@ -156,7 +156,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             
             if ids_to_delete:
                 deleted_count = len(ids_to_delete)
-                # 使用 Supabase 的 `in` 过滤器进行批量删除
                 supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
         # 2. 处理修改操作 (UPSERT/UPDATE)
@@ -165,26 +164,46 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             data_to_upsert = []
             
             for filtered_index, changes in edited_rows.items():
+                # 跳过已删除的行
                 if filtered_index in deleted_indices:
+                    continue
+                
+                # 确保索引有效
+                if filtered_index >= len(displayed_df):
                     continue
                     
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期字符串
-                original_date_str = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期 (Timestamp 对象)
+                original_date_ts = displayed_df.iloc[filtered_index]['date']
                 
-                # 日期回退值
-                if original_date_str:
-                     update_data['date'] = original_date_str
-                else:
-                     update_data['date'] = datetime.now().strftime('%Y-%m-%d')
+                # 设置回退日期
+                initial_date_str = datetime.now().strftime('%Y-%m-%d')
+                if pd.notna(original_date_ts):
+                    try:
+                        initial_date_str = original_date_ts.strftime('%Y-%m-%d')
+                    except:
+                        pass
                 
+                update_data['date'] = initial_date_str 
+                
+                # 遍历修改
                 for col, value in changes.items():
                     if col == 'date':
-                        # 编辑器返回的 value 可能是字符串 YYYY-MM-DD
+                        final_date_str_edit = None
+                        # 处理可能的输入类型：字符串或Timestamp
                         if value:
-                             update_data[col] = value
+                            if isinstance(value, str):
+                                final_date_str_edit = value
+                            elif isinstance(value, (datetime, pd.Timestamp)):
+                                final_date_str_edit = value.strftime('%Y-%m-%d')
+                            elif isinstance(value, date):
+                                final_date_str_edit = value.strftime('%Y-%m-%d')
+                        
+                        if final_date_str_edit:
+                            update_data[col] = final_date_str_edit 
+
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -286,16 +305,10 @@ def scrape_card_data(url):
             if image_tag:
                 image_url = image_tag.get('data-src') or image_tag.get('src') 
         
-        if not image_url:
-            st.warning("未能找到图片链接。")
-
         return {
             "card_name": card_name, "card_number": card_number, "card_set": card_set,
             "card_rarity": rarity, "card_color": color, "image_url": image_url, "error": None
         }
-
-    except requests.exceptions.RequestException as e:
-        return {"error": f"网络错误或无法访问: {e}"}
     except Exception as e:
         return {"error": f"解析错误: {e}"}
 
@@ -304,7 +317,7 @@ st.set_page_config(page_title="卡牌行情分析Pro", page_icon="📈", layout=
 
 suffix = str(st.session_state['form_key_suffix']) 
 
-# --- 侧边栏 ---
+# --- 侧边栏：录入 ---
 with st.sidebar:
     if st.session_state.get('submission_successful'):
         card_name = st.session_state.get('submitted_card_name', '一张卡牌')
@@ -393,7 +406,6 @@ df = load_data()
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
-    # 预处理
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -433,27 +445,28 @@ else:
     # --- 📝 数据编辑区域 ---
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
-    st.caption("✅ **整行删除**：表格**最左侧**是**行选择区域**。勾选/选中行后，按 **`Delete`** 键删除。")
+    st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
     
-    # 【核心修复】：
-    # 1. 不删除 date_dt 列，因为后面分析还要用
-    # 2. 创建一个用于显示的 DataFrame，处理日期格式
-    display_df = filtered_df.copy()
-    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d')
+    # 核心修复 1: 准备数据，确保 date 列是 datetime64[ns] 类型
+    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    
+    # 将日期列强制转换为 datetime64[ns]，这对 Streamlit DateColumn 最安全
+    display_df['date'] = pd.to_datetime(display_df['date'], errors='coerce')
+    
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
-    display_df_editor = display_df[['id'] + FINAL_DISPLAY_COLUMNS] # 只给编辑器必要的列
+    display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
 
-    if display_df_editor.empty:
+    if display_df.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
-            "date": st.column_config.DateColumn("录入时间", width=80, format="YYYY-MM-DD"), 
+            "date": st.column_config.DateColumn("录入时间", width=80), # DateColumn 会自动处理 datetime64[ns]
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
             "card_set": st.column_config.Column("系列", width=100), 
@@ -466,12 +479,12 @@ else:
         
         # 移除 selection_mode="multi-row" 以兼容旧版本
         edited_df = st.data_editor(
-            display_df_editor, 
+            display_df, 
             key="data_editor",
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="dynamic", # 启用删除功能的关键
+            num_rows="dynamic",
             use_container_width=True 
         )
 
@@ -479,13 +492,12 @@ else:
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         st.info("🔄 检测到修改，正在自动增量保存...")
         with st.spinner("🚀 数据增量自动保存中..."):
-            save_incremental_changes(display_df_editor, editor_state)
+            save_incremental_changes(display_df, editor_state)
         st.rerun()
 
     st.divider()
     st.markdown("### 📊 单卡深度分析")
-    analysis_df = filtered_df.copy() # 使用 filtered_df，它包含 date_dt
-    
+    analysis_df = filtered_df.copy() 
     if analysis_df.empty:
         st.warning("无筛选结果。")
     else:
