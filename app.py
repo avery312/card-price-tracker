@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+# 【修复 1】：明确导入 datetime 和 date 对象
+from datetime import datetime, date 
 import requests
 from bs4 import BeautifulSoup
 import re 
@@ -34,7 +35,6 @@ if 'search_name_input' not in st.session_state:
 if 'search_set_input' not in st.session_state:
     st.session_state['search_set_input'] = ""
     
-# 【新增】：用于显示自动保存成功的临时状态
 if 'autosave_successful' not in st.session_state:
     st.session_state['autosave_successful'] = False
 if 'autosave_message' not in st.session_state:
@@ -130,7 +130,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心修改】：增量保存函数，用于自动保存
+# 【核心修复】：增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
@@ -169,8 +169,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 row_id = displayed_df.iloc[filtered_index]['id']
                 
                 # 从原始显示的行数据开始
-                # 注意：这里需要确保获取到的是最新的数据，如果 Streamlit 已经更新了 edited_df，则应该从 edited_df 拿
-                # 为了保持简单和健壮，我们基于原始的 displayed_df + changes 来构建 update_data
                 original_row = displayed_df.iloc[filtered_index].to_dict()
                 
                 # 应用所有修改
@@ -184,15 +182,23 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     value = changes.get(col, original_row.get(col)) 
                     
                     if col == 'date':
-                        # 确保日期格式为 YYYY-MM-DD
-                        if isinstance(value, datetime) or isinstance(value, pd.Timestamp):
-                            update_data[col] = value.strftime('%Y-%m-%d')
-                        elif isinstance(value, datetime.date): 
-                            update_data[col] = value.strftime('%Y-%m-%d')
+                        # 核心修复：使用元组检查多种日期类型，避免 isinstance() 错误
+                        if isinstance(value, (datetime, pd.Timestamp, date)): 
+                            # 如果值是日期或时间戳类型，尝试格式化
+                            try:
+                                update_data[col] = value.strftime('%Y-%m-%d')
+                            except Exception:
+                                update_data[col] = None 
                         elif isinstance(value, str):
+                            # 如果已经是字符串，直接使用
                             update_data[col] = value
+                        elif pd.isna(value) or value is None:
+                            # 处理 NaN 或 None
+                            update_data[col] = None
                         else:
-                            update_data[col] = None 
+                            # 兜底：其他类型不处理或设为 None
+                            update_data[col] = None
+                            
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
                     elif col in ['quantity']:
@@ -214,6 +220,7 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             st.session_state['autosave_message'] = msg
         
     except Exception as e:
+        # 捕获任何可能的错误，并设置错误消息，让主程序显示
         st.session_state['autosave_successful'] = True
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
 
@@ -483,6 +490,7 @@ else:
         # 即使没有数据，也要确保 data_editor 状态存在，否则下面的检查会失败
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
+        edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
