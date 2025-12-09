@@ -40,17 +40,19 @@ if 'search_set_input' not in st.session_state:
 
 
 def clear_all_data():
+    """清除所有录入相关 Session State。"""
     st.session_state['scrape_result'] = {} 
     st.session_state['form_key_suffix'] += 1 
     st.session_state['last_entry_date'] = datetime.now().date() 
 
 def clear_search_filters_action():
+    """清除所有筛选相关的 Session State 变量。用于 on_click 回调。"""
     st.session_state["search_name_input"] = ""
     st.session_state["search_set_input"] = ""
     st.session_state["date_range_input"] = [] 
 
 
-# === 辅助函数 ===
+# === 辅助函数：模糊搜索规范化 ===
 def normalize_text_for_fuzzy_search(text):
     if pd.isna(text):
         return ""
@@ -61,6 +63,7 @@ def normalize_text_for_fuzzy_search(text):
 
 @st.cache_resource(ttl=None)
 def connect_supabase() -> Client:
+    """使用 Streamlit Secrets 凭证连接到 Supabase 数据库 (连接对象缓存)"""
     try:
         url: str = st.secrets["supabase"]["URL"]
         key: str = st.secrets["supabase"]["KEY"]
@@ -71,12 +74,14 @@ def connect_supabase() -> Client:
         return None
 
 def load_data():
+    """从 Supabase 读取所有数据 (每次脚本运行时都强制读取)"""
     supabase = connect_supabase()
     if not supabase:
         return pd.DataFrame(columns=NEW_EXPECTED_COLUMNS)
     
     try:
         response = supabase.table(SUPABASE_TABLE_NAME).select("*").order("date", desc=True).execute()
+        
         df = pd.DataFrame(response.data)
         
         if df.empty:
@@ -84,6 +89,7 @@ def load_data():
 
         df = df.replace({np.nan: None}) 
         df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+        
         df = df[NEW_EXPECTED_COLUMNS] 
 
         return df
@@ -98,6 +104,7 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     
     try:
         response = supabase.table(SUPABASE_TABLE_NAME).select("id").order("id", desc=True).limit(1).execute()
+        
         max_id = 0
         if response.data and response.data[0] and 'id' in response.data[0]:
             max_id = response.data[0]['id']
@@ -122,10 +129,10 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心修正】：增强版增量保存函数，包含越界检查
+# 增量保存函数，用于自动保存
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
-    增量保存修改到 Supabase，包含索引安全检查。
+    根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
     """
     supabase = connect_supabase()
     if not supabase: return
@@ -137,44 +144,40 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
-            # 🚨 增加安全检查：只处理在 displayed_df 范围内的索引
-            valid_indices = [i for i in deleted_indices if i < len(displayed_df)]
-            
-            if valid_indices:
-                ids_to_delete = displayed_df.iloc[valid_indices]['id'].tolist()
-                if ids_to_delete:
-                    deleted_count = len(ids_to_delete)
-                    supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
+            ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+            if ids_to_delete:
+                deleted_count = len(ids_to_delete)
+                supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
-        # 2. 处理修改操作 (UPSERT)
+        # 2. 处理修改操作 (UPSERT/UPDATE)
         edited_rows = editor_state.get("edited_rows", {})
         if edited_rows:
             data_to_upsert = []
             
             for filtered_index, changes in edited_rows.items():
-                # 跳过已删除的行
                 if filtered_index in deleted_indices:
                     continue
                 
-                # 🚨 增加安全检查：确保索引有效
+                # 检查索引是否越界 (安全检查)
                 if filtered_index >= len(displayed_df):
                     continue
                     
                 row_id = displayed_df.iloc[filtered_index]['id']
                 update_data = {'id': int(row_id)}
                 
-                # 获取原始日期
-                original_date = displayed_df.iloc[filtered_index]['date']
+                # 获取原始日期 (字符串形式)
+                original_date_str = displayed_df.iloc[filtered_index]['date']
                 
                 # 设置日期回退值
                 initial_date_str = datetime.now().strftime('%Y-%m-%d')
-                if original_date:
-                    initial_date_str = str(original_date) # date 对象转字符串
+                if original_date_str:
+                     initial_date_str = original_date_str
                 
                 update_data['date'] = initial_date_str 
                 
                 for col, value in changes.items():
                     if col == 'date':
+                        # 编辑器返回的 value 可能是字符串 YYYY-MM-DD
                         if value:
                              update_data[col] = value
                     elif col in ['price']:
@@ -380,7 +383,6 @@ df = load_data()
 if df.empty:
     st.info("👋 欢迎！请在左侧录入你的第一张卡牌数据。")
 else:
-    # 预处理数据类型
     df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
     df['image_url'] = df['image_url'].fillna('')
     df['rarity'] = df['rarity'].fillna('') 
@@ -422,11 +424,18 @@ else:
     st.caption("✨ **自动增量保存**：修改内容后点击表格外任意处，系统自动保存。")
     st.caption("✅ **整行删除**：表格**最左侧**是**行选择复选框**。勾选后按 **`Delete`** 键删除。")
     
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    # 【核心修复】：直接使用 filtered_df 的 copy
+    # 先将 date_dt 转换为字符串，再 drop date_dt
+    # 这样确保了 date 列是纯净的字符串类型
+    display_df = filtered_df.copy()
+    display_df['date'] = display_df['date_dt'].dt.strftime('%Y-%m-%d')
+    display_df = display_df.drop(columns=['date_dt'], errors='ignore')
     
-    # 确保日期列为字符串格式
-    display_df['date'] = display_df['date'].astype(str)
-    
+    # 强制将所有文本列转换为字符串，防止 None 或 nan 导致的类型错误
+    text_cols = ['card_number', 'card_name', 'card_set', 'rarity', 'color', 'image_url']
+    for col in text_cols:
+        display_df[col] = display_df[col].astype(str).replace('nan', '')
+
     display_df = display_df.sort_values(by='id', ascending=False)
     display_df = display_df.reset_index(drop=True) 
     
@@ -457,9 +466,9 @@ else:
             hide_index=True,
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            num_rows="dynamic",
-            use_container_width=True
-            # 注意：此处已移除 selection_mode 参数以兼容旧版本 Streamlit
+            num_rows="dynamic", # 启用删除
+            # 移除 selection_mode 以兼容性
+            use_container_width=True 
         )
 
     editor_state = st.session_state.get("data_editor")
