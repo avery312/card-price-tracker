@@ -149,7 +149,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
             # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
-            # displayed_df 已经被 reset_index(drop=True)，所以 .iloc 对应的是编辑器中的行号。
             ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
             
             if ids_to_delete:
@@ -168,7 +167,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     continue
                     
                 # 获取原始 ID，它是更新记录的唯一标识
-                # displayed_df 索引已被重置，filtered_index 正确对应行号
                 row_id = displayed_df.iloc[filtered_index]['id']
                 
                 # 创建一个只包含 ID 和所有修改列的数据字典
@@ -182,7 +180,11 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                         # 兼容 date 和 datetime 对象，并转换为 Supabase 需要的字符串格式
                         if isinstance(value, (datetime, pd.Timestamp, date)): 
                             try:
-                                update_data[col] = value.strftime('%Y-%m-%d')
+                                # 确保不是 NaT，否则会报错
+                                if pd.isna(value):
+                                     update_data[col] = None 
+                                else:
+                                     update_data[col] = value.strftime('%Y-%m-%d')
                             except Exception:
                                 update_data[col] = None 
                         elif isinstance(value, str):
@@ -466,20 +468,24 @@ else:
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置（例如另一个单元格、筛选框或背景），系统将**只更新**您修改的单元格数据到数据库。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录，**其他未筛选的数据将保持不变**。")
     # 【多选删除提示】
-    st.caption("✅ **多行删除提示**：现在，表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
+    st.caption("✅ **多行删除提示**：表格最左侧已出现**复选框**。勾选一行或多行，然后按键盘上的 **`Delete`** 键即可执行删除操作。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
     display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
-    # 确保 data_editor 的 date 列为 date object
-    display_df_for_editor['date'] = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date 
+
+    # **********************************************
+    # 【关键修正：解决 TypeError - 步骤 1/2: 清理日期类型】
+    # 1. 尝试转换为 date 对象
+    date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
+    # 2. 明确将 NaT (Pandas的无效时间) 替换为 Python 的 None
+    display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
+    # **********************************************
 
     display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
-    # **********************************************
-    # 【关键修正：解决 TypeError 的方法】
-    # 强制重置索引，使索引连续，与 data_editor 内部使用的 0-based 索引一致。
+    # 【关键修正：解决 TypeError - 步骤 2/2: 强制重置索引】
+    # 确保索引连续，与 data_editor 内部使用的 0-based 索引一致。
     display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
-    # **********************************************
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
@@ -494,6 +500,7 @@ else:
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
+            # DateColumn 现在有干净的 date 或 None 作为输入
             "date": st.column_config.DateColumn("录入时间", width=80), 
             "card_number": st.column_config.Column("编号", width=70),
             "card_name": st.column_config.Column("卡名", width=200), 
