@@ -138,12 +138,10 @@ def add_card(name, number, card_set, price, quantity, rarity, color, date, image
     except Exception as e:
         st.error(f"追加数据到 Supabase 失败。错误: {e}")
 
-# 【核心功能：实现增量自动保存，已修复日期非空约束问题】
+# 【核心功能：实现增量自动保存】
 def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
     """
     根据 data_editor 的状态，对 Supabase 进行精确的 UPSERT 和 DELETE 操作。
-    - displayed_df 是 data_editor 当前显示的 (已筛选且**已重置索引**) 的 DataFrame。
-    - editor_state 包含被编辑和被删除的行索引 (基于 0-based 连续索引)。
     """
     supabase = connect_supabase()
     if not supabase: return
@@ -155,13 +153,15 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
         # 1. 处理删除操作 (DELETE)
         deleted_indices = editor_state.get("deleted_rows", [])
         if deleted_indices:
-            # 根据 0-based 索引从显示的 DataFrame 中获取要删除的记录的 ID
-            ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
-            
-            if ids_to_delete:
-                deleted_count = len(ids_to_delete)
-                # 使用 Supabase 的 `in` 过滤器进行批量删除
-                supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
+            # 根据索引从显示的 DataFrame 中获取要删除的记录的 ID
+            # 注意：这里的索引是相对于 displayed_df 的
+            if not displayed_df.empty and len(displayed_df) >= max(deleted_indices):
+                 ids_to_delete = displayed_df.iloc[deleted_indices]['id'].tolist()
+                 
+                 if ids_to_delete:
+                    deleted_count = len(ids_to_delete)
+                    # 使用 Supabase 的 `in` 过滤器进行批量删除
+                    supabase.table(SUPABASE_TABLE_NAME).delete().in_('id', ids_to_delete).execute()
 
         # 2. 处理修改操作 (UPSERT/UPDATE)
         edited_rows = editor_state.get("edited_rows", {})
@@ -171,6 +171,10 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             for filtered_index, changes in edited_rows.items():
                 # 检查这个索引是否同时被删除，如果是，则跳过（删除优先）
                 if filtered_index in deleted_indices:
+                    continue
+                
+                # 确保索引有效
+                if filtered_index >= len(displayed_df):
                     continue
                     
                 # 获取原始 ID，它是更新记录的唯一标识
@@ -183,14 +187,12 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                 original_date_obj = displayed_df.iloc[filtered_index]['date']
                 
                 # --- 【日期非空修正核心逻辑】 ---
-                # 目标：确保 update_data 在发送给 Supabase 时始终包含 'date' 键，且值为非空字符串。
                 initial_date_str = datetime.now().strftime('%Y-%m-%d') # 终极回退值
                 
                 if original_date_obj:
                     if isinstance(original_date_obj, date):
                         initial_date_str = original_date_obj.strftime('%Y-%m-%d')
                     elif isinstance(original_date_obj, str):
-                         # 假设原始字符串是有效的 YYYY-MM-DD
                         initial_date_str = original_date_obj
                 
                 # 无论如何，先设置一个有效的日期值 (原始值或今天的值)
@@ -212,17 +214,14 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                                 except:
                                     pass 
                             elif isinstance(value, str):
-                                # 检查字符串是否是有效的日期格式
                                 try:
                                     datetime.strptime(value, '%Y-%m-%d')
                                     final_date_str_edit = value
                                 except:
                                     pass
                         
-                        # 只有编辑后的值有效时才覆盖 update_data['date']
                         if final_date_str_edit is not None:
                             update_data[col] = final_date_str_edit 
-                        # 如果编辑值无效，将保留修正步骤中设置的 initial_date_str
 
                     elif col in ['price']:
                         update_data[col] = float(value) if pd.notna(value) else 0.0
@@ -231,12 +230,11 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
                     else:
                         update_data[col] = str(value) if pd.notna(value) else ""
                         
-                # 将包含 ID 和修改值的字典添加到待更新列表
                 data_to_upsert.append(update_data)
             
             if data_to_upsert:
                 updated_count = len(data_to_upsert)
-                # Supabase UPSERT (根据主键 'id' 自动更新或插入)
+                # Supabase UPSERT
                 supabase.table(SUPABASE_TABLE_NAME).upsert(data_to_upsert).execute()
 
         
@@ -246,7 +244,6 @@ def save_incremental_changes(displayed_df: pd.DataFrame, editor_state: dict):
             st.session_state['autosave_message'] = msg
         
     except Exception as e:
-        # 捕获任何可能的错误，并设置错误消息，让主程序显示
         st.session_state['autosave_successful'] = True
         st.session_state['autosave_message'] = f"❌ 自动保存失败。错误: {e}"
 
@@ -463,7 +460,6 @@ else:
     col_s1, col_s2, col_s3, col_s4 = st.columns([3, 3, 3, 1]) 
     
     with col_s1: 
-        # 使用 Session State 变量保持输入框的值
         search_name = st.text_input("搜索 名称/编号/ID", value=st.session_state["search_name_input"], help="支持模糊搜索", key="search_name_input") 
     with col_s2: 
         search_set = st.text_input("搜索 系列/版本", value=st.session_state["search_set_input"], key="search_set_input")
@@ -510,32 +506,31 @@ else:
     st.markdown("### 📝 数据编辑（自动增量保存模式）")
     st.caption("✨ **自动增量保存**：在单元格中完成修改后，点击表格外的任何位置，系统将**自动保存**您修改的内容。")
     st.caption("🚨 **安全提示**：此编辑器仅显示筛选结果。所有修改和删除将仅应用于屏幕上可见的记录。")
-    # 删除了多行删除的提示，替换为单行删除的提示
-    st.caption("🗑️ **删除提示**：选中一行（点击行内容），然后按键盘上的 **`Delete`** 键即可执行删除操作。")
+    # 【修复后的提示】：现在最左侧的索引编号就是选择区域
+    st.caption("✅ **多行删除提示**：要删除单行或多行，请**点击最左侧的行编号**进行选择，然后按键盘上的 **`Delete`** 键。按住 **`Shift`** 或 **`Ctrl/Cmd`** 可以进行多行选择。")
     
     # 准备用于展示和编辑的 DataFrame (使用筛选结果)
-    display_df = filtered_df.drop(columns=['date_dt'], errors='ignore')
+    display_df_for_editor = filtered_df.drop(columns=['date_dt'], errors='ignore')
 
-    # 1. 清理日期类型：将 NaT (无效时间) 替换为 Python 的 None
-    # 这一步是为了让 st.data_editor 能够正确显示 date_column (date对象或None)
-    date_series = pd.to_datetime(display_df['date'], errors='coerce').dt.date
-    display_df['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
+    # 1. 清理日期类型
+    date_series = pd.to_datetime(display_df_for_editor['date'], errors='coerce').dt.date
+    display_df_for_editor['date'] = date_series.apply(lambda x: None if pd.isna(x) else x)
     
-    display_df = display_df.sort_values(by='id', ascending=False)
+    display_df_for_editor = display_df_for_editor.sort_values(by='id', ascending=False)
     
-    # 2. 强制重置索引：确保索引连续
-    display_df = display_df.reset_index(drop=True) 
+    # 2. 强制重置索引
+    display_df_for_editor = display_df_for_editor.reset_index(drop=True) 
     
     FINAL_DISPLAY_COLUMNS = ['date', 'card_number', 'card_name', 'card_set', 'price', 'quantity', 'rarity', 'color', 'image_url']
     
     # 确保 ID 列在最前面
-    display_df = display_df[['id'] + FINAL_DISPLAY_COLUMNS]
+    display_df_for_editor = display_df_for_editor[['id'] + FINAL_DISPLAY_COLUMNS]
 
-    if display_df.empty:
+    if display_df_for_editor.empty:
         st.info("没有找到符合筛选条件的数据可供编辑。")
-        # 确保 session state 中存在 data_editor 键，防止后续逻辑报错
         if "data_editor" not in st.session_state:
             st.session_state["data_editor"] = {"edited_rows": {}, "deleted_rows": []}
+        edited_df = pd.DataFrame(columns=['id'] + FINAL_DISPLAY_COLUMNS)
     else:
         column_config_dict = {
             "id": st.column_config.Column("ID", disabled=True, width=50), 
@@ -550,33 +545,27 @@ else:
             "image_url": st.column_config.ImageColumn("卡图", width=50),
         }
         
-        # 核心修改：明确设置为单行选择，从而禁用多行选择的复选框
-        st.data_editor(
-            display_df, 
-            key="data_editor", # 核心：将编辑状态存入 session state
-            hide_index=True,
+        # 关键修复: 移除 hide_index=True，恢复左侧行号用于选择
+        edited_df = st.data_editor(
+            display_df_for_editor, 
+            key="data_editor",
+            # hide_index=True, <-- 移除此行
             column_order=['id'] + FINAL_DISPLAY_COLUMNS,
             column_config=column_config_dict,
-            selection_mode="single-row", # 移除多行删除功能的关键
-            num_rows="fixed", # 仅允许修改现有行和删除行
+            num_rows="fixed", 
             use_container_width=True 
         )
 
     # 【核心自动保存逻辑】
     editor_state = st.session_state.get("data_editor")
     
-    # 检查是否有编辑变动或删除操作
-    # 当用户在单元格完成编辑或删除行后，st.data_editor 会自动更新 session state 并触发 rerun
     if editor_state and (editor_state.get("edited_rows") or editor_state.get("deleted_rows")):
         
-        # 立即进行保存，取代手动确认按钮
         st.info("🔄 检测到修改，正在自动增量保存...")
         
         with st.spinner("🚀 数据增量自动保存中..."):
-            # 调用增量保存函数
-            save_incremental_changes(display_df, editor_state)
+            save_incremental_changes(display_df_for_editor, editor_state)
         
-        # 必须调用 rerun 来刷新数据，清除 data_editor 的状态，并显示保存成功的消息
         st.rerun()
 
     
@@ -622,11 +611,10 @@ else:
                 avg_price = target_df['price'].mean()
                 
                 max_price = target_df['price'].max()
-                # 确保在取日期时，df不是空的，且日期是有效的
-                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0] if not target_df[target_df['price'] == max_price].empty else "N/A"
+                max_price_date = target_df[target_df['price'] == max_price]['date'].iloc[0]
                 
                 min_price = target_df['price'].min()
-                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0] if not target_df[target_df['price'] == min_price].empty else "N/A"
+                min_price_date = target_df[target_df['price'] == min_price]['date'].iloc[0]
 
                 c1, c2 = st.columns(2)
                 c1.metric("💰 最新成交", f"¥{curr_price:,.0f}")
@@ -686,5 +674,5 @@ else:
             data=csv_data,
             file_name='card_data_full_export.csv',
             mime='text/csv',
-            help='点击下载 Supabase 中的所有数据，用于备份。'
+            help="点击下载 Supabase 中的所有数据，用于备份。"
         )
